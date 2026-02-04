@@ -1,25 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "Bash(source:*)",
-      "Bash(source .env && *)",
-      "Bash(curl:*)",
-      "Bash(git:*)",
-      "Bash(gh:*)",
-      "Bash(ls:*)",
-      "Bash(tree:*)",
-      "Bash(echo:*)",
-      "Bash(cat:*)",
-      "Bash(date:*)",
-      "Bash(mkdir:*)",
-      "Bash(cd:*)",
-      "Bash(for:*)",
-      "Bash(grep:*)",
-      "Bash(python3:*)",
+      "Bash(*)",
       "WebSearch",
-      "WebFetch(domain:apidocs.bitrix24.com)",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:deepwiki.com)"
+      "WebFetch"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(rm -r:*)",
+      "Bash(rmdir:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(apt:*)",
+      "Bash(brew install:*)",
+      "Bash(brew uninstall:*)",
+      "Bash(npm install -g:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(sudo:*)"
     ]
   }
 }
