@@ -26,22 +26,26 @@ If the period is ambiguous, ask the user to clarify before proceeding.
 
 ### Step 1.5: Resolve Project Directories
 
-Determine which directories to scan for projects:
+Determine which directories to scan for projects. Use the **first available** source:
 
-1. Read `PROJECTS_DIRS` from `.env` in the project root (the directory where this agent is defined):
-   ```bash
-   source .env 2>/dev/null && echo "$PROJECTS_DIRS"
-   ```
-2. If `PROJECTS_DIRS` is set, split it by `:` to get a list of directories
-3. Expand `~` to the user's home directory in each path
-4. If `PROJECTS_DIRS` is not set or empty, fall back to `~/Projects`
-5. For each directory, verify it exists. If a directory doesn't exist, skip it and note it
-6. If NONE of the directories exist, inform the user and stop
+**Source 1 (preferred):** Check if the caller passed directories in the prompt (e.g., "Папки с проектами: ~/Projects:~/work/clients"). If present — use them directly. This is the most reliable method because it avoids permission issues.
+
+**Source 2 (fallback):** Read `PROJECTS_DIRS` from `.env` in the project root:
+```bash
+source .env 2>/dev/null && echo "$PROJECTS_DIRS"
+```
+
+**Source 3 (default):** If neither source provides directories, fall back to `~/Projects`.
+
+After resolving the raw value:
+1. Split by `:` to get a list of directories
+2. Expand `~` to the user's home directory in each path
+3. For each directory, verify it exists. If a directory doesn't exist, skip it and note it
+4. If NONE of the directories exist, inform the user and stop
 
 Example values:
-- `PROJECTS_DIRS="~/Projects"` → scan `~/Projects`
-- `PROJECTS_DIRS="~/Projects:~/work/clients"` → scan both directories
-- Not set → scan `~/Projects` (default)
+- `~/Projects` → scan `~/Projects`
+- `~/Projects:~/work/clients` → scan both directories
 
 ### Step 2: Check the Cache
 
