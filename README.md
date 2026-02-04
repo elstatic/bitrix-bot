@@ -57,7 +57,16 @@ cd bitrix-bot
 Или создать файл `.env` вручную:
 
 ```bash
-echo 'export BITRIX24_WEBHOOK_URL="https://ваш-домен.bitrix24.ru/rest/USER_ID/WEBHOOK_CODE/"' > .env
+cat > .env << 'EOF'
+export BITRIX24_WEBHOOK_URL="https://ваш-домен.bitrix24.ru/rest/USER_ID/WEBHOOK_CODE/"
+export PROJECTS_DIRS="~/Projects"
+EOF
+```
+
+`PROJECTS_DIRS` — папки с git-проектами для сводок активности. Несколько папок через `:`:
+
+```bash
+export PROJECTS_DIRS="~/Projects:~/work/clients"
 ```
 
 ### 5. Проверить
@@ -96,7 +105,7 @@ Claude Code автоматически подхватывает скиллы и�
 │   └── setup-env/SKILL.md             # Настройка .env
 ├── agents/
 │   ├── activity-data-collector.md     # Сбор git-активности (текущий проект)
-│   └── project-activity-digest.md     # Сводка по всем ~/Projects/
+│   └── project-activity-digest.md     # Сводка по проектам (PROJECTS_DIRS)
 └── rules/
     └── subagents.md                   # Правила вызова субагентов
 ```
