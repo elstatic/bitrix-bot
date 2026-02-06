@@ -56,186 +56,72 @@ WEEK_END=$(date -v-Mon -v-1d +%Y-%m-%d 2>/dev/null || date -d 'last sunday' +%Y-
 
 ## Алгоритм сбора данных
 
-Сначала получи профиль пользователя, затем запускай **4 параллельных потока**.
+Используется Python-скрипт для максимальной скорости сбора данных через batch API Bitrix24 + субагент для суммаризации чатов.
 
-### Шаг 0: Получить профиль пользователя
+### Шаг 1: Собрать данные Python-скриптом
 
+Python-скрипт собирает: задачи, встречи, трудозатраты, git активность (всё кроме чатов).
+
+**Для текущей недели:**
 ```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}profile.json"
+python3 .claude/scripts/weekly_review/main.py --week current
 ```
 
-Поле `result.ID` — ID пользователя. Поле `result.NAME` + `result.LAST_NAME` — имя для отображения.
-
----
-
-### Поток 1: Задачи Битрикс24
-
-Используй формат дат `YYYY-MM-DD` и `--data-urlencode` для фильтров с операторами.
-
-Для фильтрации по неделе:
-- `filter[>FIELD]=<ДЕНЬ_ДО_НАЧАЛА_НЕДЕЛИ>` (день перед понедельником)
-- `filter[<FIELD]=<ДЕНЬ_ПОСЛЕ_КОНЦА_НЕДЕЛИ>` (день после последнего дня)
-
-#### 1а. Задачи, которые я создал за неделю
-
+**Для прошлой недели:**
 ```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[CREATED_BY]=<USER_ID>' \
-  --data-urlencode 'filter[>CREATED_DATE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<CREATED_DATE]=<ДЕНЬ_ПОСЛЕ>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=STATUS' \
-  -d 'select[]=CREATED_DATE' -d 'select[]=RESPONSIBLE_ID'
+python3 .claude/scripts/weekly_review/main.py --week last
 ```
 
-#### 1б. Задачи, которые мне поставили за неделю
+Скрипт автоматически:
+- Использует batch API Bitrix24 для оптимизации (3-4 запроса вместо 30+)
+- Собирает данные параллельно (задачи, встречи, трудозатраты, git)
+- Форматирует вывод в markdown
+- Обрабатывает ошибки gracefully
 
+### Шаг 2: Получить суммаризацию чатов через субагент
+
+Параллельно с запуском скрипта (или сразу после) вызови субагент `chat-digest`:
+
+**Сначала** получи webhook URL и период:
 ```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  --data-urlencode 'filter[>CREATED_DATE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<CREATED_DATE]=<ДЕНЬ_ПОСЛЕ>' \
-  --data-urlencode 'filter[!CREATED_BY]=<USER_ID>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=STATUS' \
-  -d 'select[]=CREATED_DATE' -d 'select[]=CREATED_BY'
+source .env && echo "$BITRIX24_WEBHOOK_URL"
+# И вычисли WEEK_START, WEEK_END (из Шага 0 выше)
 ```
 
-#### 1в. Задачи, закрытые за неделю
-
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  -d 'filter[STATUS]=5' \
-  --data-urlencode 'filter[>CLOSED_DATE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<CLOSED_DATE]=<ДЕНЬ_ПОСЛЕ>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=CLOSED_DATE'
-```
-
-#### 1г. Активные задачи (не закрытые, на мне)
-
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  --data-urlencode 'filter[!STATUS]=5' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=STATUS' -d 'select[]=DEADLINE' \
-  -d 'select[]=TIME_SPENT_IN_LOGS' \
-  -d 'order[ACTIVITY_DATE]=desc' \
-  -d 'start=0'
-```
-
-Возвращает до 50 задач, отсортированных по дате последней активности. Показывай статус и дедлайн (если есть).
-
-#### 1д. Трудозатраты за неделю
-
-Цель — показать, сколько времени пользователь залогировал за целевой период.
-
-**Стратегия**: собрать ID задач из запросов 1а–1г (все уникальные), затем через batch-запрос получить записи трудозатрат и отфильтровать по дате.
-
-1. Собери уникальные ID задач из всех предыдущих запросов (созданные + поставленные + закрытые + активные). Максимум 50 ID (ограничение batch).
-
-2. Сформируй batch-запрос:
-
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}batch.json" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "halt": 0,
-    "cmd": {
-      "t_<ID1>": "task.elapseditem.getlist?TASKID=<ID1>&ORDER[CREATED_DATE]=desc",
-      "t_<ID2>": "task.elapseditem.getlist?TASKID=<ID2>&ORDER[CREATED_DATE]=desc",
-      ...
-    }
-  }'
-```
-
-3. Из ответа `result.result` для каждой задачи получи массив записей. Каждая запись содержит:
-   - `CREATED_DATE` — дата записи
-   - `SECONDS` — количество секунд
-   - `USER_ID` — кто залогировал
-   - `COMMENT_TEXT` — комментарий к записи
-
-4. Отфильтруй записи: `CREATED_DATE` попадает в целевой период И `USER_ID` = ID текущего пользователя.
-
-5. Посчитай сумму `SECONDS` по всем записям — это общие трудозатраты за неделю. Конвертируй в часы и минуты.
-
-6. Сгруппируй по задачам для детализации.
-
-**Без проверки комментариев** — за неделю слишком много API-вызовов.
-
----
-
-### Поток 2: Встречи из календаря
-
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}calendar.event.get.json" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"user","ownerId":<USER_ID>,"from":"<WEEK_START>","to":"<WEEK_END>"}'
-```
-
-Ключевые поля ответа:
-- `ID`, `NAME` — ID и название
-- `DATE_FROM` / `DATE_TO` — начало и конец
-- `DESCRIPTION` — описание
-- `LOCATION` — место/ссылка на звонок
-- `IS_MEETING` — есть ли участники
-- `MEETING_STATUS` — `Y` (принял), `N` (отклонил), `Q` (не ответил)
-- `DT_SKIP_TIME` — `Y` если событие на весь день
-
-**Фильтрация**: показывай только события со статусом `Y` или `Q`. С `N` — пропускай.
-
-**Группировка**: группируй встречи по дням недели для вывода.
-
----
-
-### Поток 3: Дайджест переписок
-
-Вызови субагента `chat-digest` через `Task` tool. **ВАЖНО**: НЕ используй `run_in_background: true` — субагенту нужен доступ к инструментам, который недоступен в фоновом режиме.
-
-Передай в промпте:
-- `BITRIX24_WEBHOOK_URL` из `.env` (уже загружен на этапе авторизации)
-- `USER_ID` и `USER_NAME` (из Шага 0)
-- Период: `WEEK_START` — `WEEK_END`
-- Лимит чатов: 15
-- Топ диалогов для выжимки: 10
-
+**Затем** вызови субагент:
 ```
 Task(
   subagent_type: "chat-digest",
   prompt: "Сформируй дайджест переписок Битрикс24.
-    BITRIX24_WEBHOOK_URL: <URL>
-    USER_ID: <ID>
-    USER_NAME: <ИМЯ>
+    BITRIX24_WEBHOOK_URL: <URL из .env>
+    USER_ID: <ID из профиля пользователя>
+    USER_NAME: <Имя пользователя>
     Период: с <WEEK_START> по <WEEK_END>
-    Лимит чатов: 15
+    Лимит чатов: 200
     Топ диалогов: 10",
-  description: "Chat digest"
+  description: "Chat digest for weekly review"
 )
 ```
 
-Результат субагента включи в секцию «Ключевые переписки» как есть. Если субагент вернул сообщение об отсутствии переписок — секцию не показывай.
+**ВАЖНО**: НЕ используй `run_in_background: true` — субагенту нужен доступ к инструментам.
 
----
+### Шаг 3: Склеить результаты
 
-### Поток 4: Активность в локальных проектах
+1. Возьми вывод Python-скрипта (задачи, встречи, трудозатраты, git)
+2. Вставь вывод субагента в секцию «Ключевые переписки»
+3. Отформатируй финальный markdown отчёт
 
-**Сначала** прочитай `PROJECTS_DIRS` из `.env`, чтобы передать папки субагенту:
+### Требования
+
+**Перед первым использованием** установи зависимости:
 
 ```bash
-source .env && echo "$PROJECTS_DIRS"
+cd .claude/scripts/weekly_review && pip3 install -r requirements.txt
 ```
 
-Если `PROJECTS_DIRS` не задана или пуста — используй `~/Projects` по умолчанию.
-
-**Затем** вызови субагента `project-activity-digest` через `Task` tool. **ВАЖНО**: НЕ используй `run_in_background: true` — субагенту нужен доступ к инструментам, который недоступен в фоновом режиме. Передай папки с проектами прямо в промпте:
-
-```
-Task(
-  subagent_type: "project-activity-digest",
-  prompt: "Покажи активность в проектах за период с <WEEK_START> по <WEEK_END>. Папки с проектами: <ЗНАЧЕНИЕ_PROJECTS_DIRS>",
-  description: "Project activity digest"
-)
-```
-
-Результат субагента включи в итоговую сводку в секцию «Проекты».
+**Необходимые переменные в .env:**
+- `BITRIX24_WEBHOOK_URL` — URL вебхука Bitrix24 (обязательно)
+- `PROJECTS_DIRS` (опционально) — папки с проектами, по умолчанию `~/projects`
 
 ---
 
