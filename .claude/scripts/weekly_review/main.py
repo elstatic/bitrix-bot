@@ -12,7 +12,11 @@ import asyncio
 import argparse
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Tuple, Optional
+
+# Добавить директорию скрипта в sys.path для абсолютных импортов
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import load_config
 from date_utils import get_week_boundaries

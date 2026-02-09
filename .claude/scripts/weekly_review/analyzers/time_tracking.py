@@ -4,7 +4,7 @@ import sys
 from datetime import datetime
 from typing import List, Dict
 
-from ..models import TimeEntry
+from models import TimeEntry
 
 
 class TimeTrackingAnalyzer:

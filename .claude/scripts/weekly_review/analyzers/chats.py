@@ -5,10 +5,10 @@ import sys
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-from ..api.bitrix_client import BitrixClient
-from ..api.claude_client import ClaudeClient
-from ..models import DialogSummary
-from ..date_utils import parse_bitrix_datetime
+from api.bitrix_client import BitrixClient
+from api.claude_client import ClaudeClient
+from models import DialogSummary
+from date_utils import parse_bitrix_datetime
 
 
 class ChatAnalyzer:

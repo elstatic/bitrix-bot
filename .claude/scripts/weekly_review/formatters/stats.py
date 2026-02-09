@@ -1,7 +1,7 @@
 """Расчёт статистики для отчёта."""
 
 from typing import Dict, Any
-from ..models import WeeklyReportData
+from models import WeeklyReportData
 
 
 class StatsCalculator:

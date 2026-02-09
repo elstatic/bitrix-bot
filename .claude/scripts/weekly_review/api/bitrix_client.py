@@ -1,13 +1,18 @@
-"""Async Bitrix24 API клиент с поддержкой batch запросов."""
+"""Async Bitrix24 API клиент с поддержкой batch запросов (stdlib only)."""
 
 import asyncio
+import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
-import aiohttp
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
+
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 class BitrixClient:
-    """Асинхронный клиент для Bitrix24 API."""
+    """Асинхронный клиент для Bitrix24 API (без внешних зависимостей)."""
 
     def __init__(self, webhook_url: str, debug: bool = False):
         """
@@ -19,22 +24,31 @@ class BitrixClient:
         """
         self.webhook_url = webhook_url.rstrip("/")
         self.debug = debug
-        self.session: Optional[aiohttp.ClientSession] = None
 
     async def __aenter__(self):
-        """Создать сессию при входе в контекст."""
-        self.session = aiohttp.ClientSession()
+        """Вход в контекст (no-op, сессия не нужна)."""
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Закрыть сессию при выходе из контекста."""
-        if self.session:
-            await self.session.close()
+        """Выход из контекста (no-op)."""
+        pass
 
     def _log(self, message: str):
         """Вывести отладочное сообщение."""
         if self.debug:
             print(f"[BitrixClient] {message}", file=sys.stderr)
+
+    def _sync_post(self, url: str, payload: dict) -> dict:
+        """Синхронный POST-запрос — вызывается в executor."""
+        data = json.dumps(payload).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    async def _async_post(self, url: str, payload: dict) -> dict:
+        """Async обёртка над синхронным HTTP через ThreadPoolExecutor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, self._sync_post, url, payload)
 
     async def batch(self, commands: Dict[str, str]) -> Dict[str, Any]:
         """
@@ -46,9 +60,6 @@ class BitrixClient:
         Returns:
             Словарь {key: result}
         """
-        if not self.session:
-            raise RuntimeError("Сессия не инициализирована. Используйте async with.")
-
         if len(commands) > 50:
             raise ValueError(f"Batch поддерживает до 50 команд, передано: {len(commands)}")
 
@@ -56,29 +67,26 @@ class BitrixClient:
 
         url = f"{self.webhook_url}/batch.json"
         payload = {
-            "halt": 0,  # Не останавливаться при ошибках
+            "halt": 0,
             "cmd": commands,
         }
 
         try:
-            async with self.session.post(url, json=payload) as response:
-                response.raise_for_status()
-                data = await response.json()
+            data = await self._async_post(url, payload)
 
-                if "result" not in data:
-                    self._log(f"Ошибка batch запроса: {data}")
-                    return {}
+            if "result" not in data:
+                self._log(f"Ошибка batch запроса: {data}")
+                return {}
 
-                result = data["result"]["result"]
+            result = data["result"]["result"]
 
-                # Проверить ошибки в отдельных командах
-                for key, value in result.items():
-                    if isinstance(value, dict) and "error" in value:
-                        self._log(f"Ошибка в команде {key}: {value['error']}")
+            for key, value in result.items():
+                if isinstance(value, dict) and "error" in value:
+                    self._log(f"Ошибка в команде {key}: {value['error']}")
 
-                return result
+            return result
 
-        except aiohttp.ClientError as e:
+        except (URLError, HTTPError) as e:
             self._log(f"Ошибка HTTP запроса: {e}")
             return {}
         except Exception as e:
@@ -96,26 +104,21 @@ class BitrixClient:
         Returns:
             Результат запроса
         """
-        if not self.session:
-            raise RuntimeError("Сессия не инициализирована. Используйте async with.")
-
         url = f"{self.webhook_url}/{method}.json"
         params = params or {}
 
         self._log(f"Вызов {method}")
 
         try:
-            async with self.session.post(url, json=params) as response:
-                response.raise_for_status()
-                data = await response.json()
+            data = await self._async_post(url, params)
 
-                if "result" in data:
-                    return data["result"]
-                else:
-                    self._log(f"Ошибка API: {data}")
-                    return None
+            if "result" in data:
+                return data["result"]
+            else:
+                self._log(f"Ошибка API: {data}")
+                return None
 
-        except aiohttp.ClientError as e:
+        except (URLError, HTTPError) as e:
             self._log(f"Ошибка HTTP запроса к {method}: {e}")
             return None
         except Exception as e:
@@ -150,7 +153,6 @@ class BitrixClient:
             if not data:
                 break
 
-            # Для разных методов структура ответа может отличаться
             if isinstance(data, dict):
                 items = data.get("tasks", data.get("result", []))
             elif isinstance(data, list):
@@ -163,7 +165,6 @@ class BitrixClient:
 
             results.extend(items)
 
-            # Проверить, есть ли ещё страницы
             if isinstance(data, dict) and data.get("next"):
                 start = data["next"]
             else:

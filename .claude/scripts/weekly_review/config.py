@@ -5,6 +5,22 @@ from pathlib import Path
 from typing import Optional
 
 
+def _load_dotenv(env_path: str):
+    """Загрузить .env файл в os.environ (без python-dotenv)."""
+    path = Path(env_path)
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = line.removeprefix("export ")
+        if "=" in line:
+            key, _, value = line.partition("=")
+            value = value.strip('"').strip("'")
+            os.environ.setdefault(key.strip(), value)
+
+
 class Config:
     """Конфигурация приложения."""
 
@@ -35,4 +51,10 @@ class Config:
 
 def load_config() -> Config:
     """Загрузить конфигурацию."""
+    # Попробовать загрузить .env из корня проекта (fallback, если source .env не был вызван)
+    script_dir = Path(__file__).resolve().parent
+    # .claude/scripts/weekly_review/ -> корень проекта (3 уровня вверх)
+    project_root = script_dir.parent.parent.parent
+    _load_dotenv(str(project_root / ".env"))
+
     return Config()

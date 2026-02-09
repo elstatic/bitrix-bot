@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 
-from ..models import GitActivity
+from models import GitActivity
 
 
 class GitAnalyzer:

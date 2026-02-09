@@ -3,14 +3,14 @@
 from datetime import datetime
 from typing import List
 
-from ..models import (
+from models import (
     WeeklyReportData,
     Task,
     Meeting,
     DialogSummary,
     GitActivity,
 )
-from ..date_utils import format_date_range
+from date_utils import format_date_range
 
 
 class MarkdownFormatter:

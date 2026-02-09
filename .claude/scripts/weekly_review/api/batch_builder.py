@@ -2,7 +2,16 @@
 
 from datetime import datetime
 from typing import Dict, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
+
+
+def _encode_filter_key(key: str) -> str:
+    """URL-кодировать операторы сравнения в ключе фильтра Bitrix24.
+
+    Bitrix24 batch API требует кодирования >=, <=, >, <, ! в ключах фильтров,
+    иначе фильтр игнорируется.
+    """
+    return quote(key, safe="ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz")
 
 
 class BatchRequestBuilder:
@@ -35,7 +44,9 @@ class BatchRequestBuilder:
         }
 
         # Сформировать строку запроса
-        filter_parts = [f"filter[{k}]={v}" for k, v in filters.items()]
+        # Операторы сравнения (>=, <=, >, <, !) в ключах фильтра нужно URL-кодировать,
+        # иначе Bitrix24 batch API игнорирует фильтр целиком
+        filter_parts = [f"filter[{_encode_filter_key(k)}]={v}" for k, v in filters.items()]
         select_parts = [f"select[]={field}" for field in select]
         query = "&".join(filter_parts + select_parts)
 

@@ -4,10 +4,10 @@ import sys
 from datetime import datetime
 from typing import List, Dict, Any
 
-from ..api.bitrix_client import BitrixClient
-from ..api.batch_builder import BatchRequestBuilder
-from ..models import Task, TimeEntry
-from ..date_utils import parse_bitrix_datetime, format_bitrix_date_filter
+from api.bitrix_client import BitrixClient
+from api.batch_builder import BatchRequestBuilder
+from models import Task, TimeEntry
+from date_utils import parse_bitrix_datetime, format_bitrix_date_filter
 
 
 class TaskAnalyzer:

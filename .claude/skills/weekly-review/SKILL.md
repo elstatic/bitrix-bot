@@ -113,11 +113,7 @@ Task(
 
 ### Требования
 
-**Перед первым использованием** установи зависимости:
-
-```bash
-cd .claude/scripts/weekly_review && pip3 install -r requirements.txt
-```
+Скрипт использует только stdlib Python — установка зависимостей не требуется.
 
 **Необходимые переменные в .env:**
 - `BITRIX24_WEBHOOK_URL` — URL вебхука Bitrix24 (обязательно)
