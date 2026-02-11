@@ -82,27 +82,7 @@ export PROJECTS_DIRS="~/Projects:~/work/clients"
 
 Claude Code автоматически подхватывает скиллы из папки `.claude/skills/`. Каждый скилл — это markdown-файл с инструкциями: какие API вызывать, как форматировать ответ, когда спрашивать подтверждение.
 
-Для Codex используются эти же инструкции, но с дополнительной адаптацией. Codex ищет скиллы в `~/.codex/skills/`. Ниже — как подключить.
-
-## Использование с Codex
-
-### Вариант A (рекомендуется): симлинк
-
-```bash
-mkdir -p ~/.codex/skills
-ln -s "$(pwd)/.claude/skills" ~/.codex/skills/bitrix-bot
-```
-
-После этого Codex увидит скиллы как `~/.codex/skills/bitrix-bot/<skill>/SKILL.md`.
-
-### Вариант B: копирование
-
-```bash
-mkdir -p ~/.codex/skills
-cp -R .claude/skills/* ~/.codex/skills/
-```
-
-При обновлении репозитория нужно повторить копирование.
+Для Codex есть отдельная папка в репозитории: `.agents/skills/`. Codex сканирует её автоматически, если вы запускаете Codex внутри репозитория. Никаких симлинков или копирований не нужно.
 
 ## Доступные скиллы
 
@@ -146,6 +126,8 @@ python3 .claude/scripts/daily_review/main.py --yesterday
     └── subagents.md                   # Правила вызова субагентов
 .claude/scripts/
 └── daily_review/                      # Быстрый сборщик daily-review (batch + кеш)
+.agents/
+└── skills/                            # Codex-адаптированные скиллы
 ```
 
 ## Безопасность
