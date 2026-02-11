@@ -18,10 +18,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Добавить директорию скрипта в sys.path для абсолютных импортов
+# Добавить директории в sys.path для абсолютных импортов
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEEKLY_DIR = SCRIPT_DIR.parent / "weekly_review"
-sys.path.insert(0, str(WEEKLY_DIR))
+# Сначала текущая папка (daily_review), затем weekly_review
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(1, str(WEEKLY_DIR))
 
 from api.bitrix_client import BitrixClient  # type: ignore
 from api.batch_builder import BatchRequestBuilder  # type: ignore
@@ -39,6 +41,105 @@ class Period:
     @property
     def key(self) -> str:
         return f"{self.date_from.strftime('%Y-%m-%d')}_{self.date_to.strftime('%Y-%m-%d')}"
+
+
+def _chunked(items: List[str], size: int) -> List[List[str]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _extract_task_ids(tasks: List[Dict[str, Any]]) -> List[str]:
+    ids = []
+    for t in tasks:
+        task_id = t.get("id") or t.get("ID")
+        if task_id:
+            ids.append(str(task_id))
+    return ids
+
+
+def _get_task_chat_id(task: Dict[str, Any]) -> Optional[str]:
+    # Try common field names observed in Bitrix24 API
+    for key in ("chatId", "CHAT_ID", "IM_CHAT_ID", "UF_CHAT_ID"):
+        val = task.get(key)
+        if val:
+            return str(val)
+    return None
+
+
+async def collect_task_chat_dialogs(
+    client: BitrixClient,
+    period: Period,
+    task_ids: List[str],
+    max_pages: int,
+) -> List[Dict[str, Any]]:
+    if not task_ids:
+        return []
+
+    dialogs: List[Dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(5)
+
+    for chunk in _chunked(task_ids, 50):
+        commands = {f"task_{tid}": f"tasks.task.get?taskId={tid}" for tid in chunk}
+        result = await client.batch(commands)
+        if not result:
+            continue
+
+        tasks = []
+        for value in result.values():
+            if isinstance(value, dict) and "task" in value:
+                tasks.append(value["task"])
+
+        fetch_tasks = []
+        for task in tasks:
+            chat_id = _get_task_chat_id(task)
+            if not chat_id:
+                continue
+            dialog_id = f"chat{chat_id}"
+            title = task.get("title") or task.get("TITLE") or f"Задача {task.get('id', '')}".strip()
+            fetch_tasks.append((dialog_id, title))
+
+        if not fetch_tasks:
+            continue
+
+        message_tasks = [
+            fetch_dialog_messages(
+                client,
+                dialog_id,
+                period,
+                max_pages=max_pages,
+                max_pages_when_empty=3,
+                semaphore=semaphore,
+            )
+            for dialog_id, _ in fetch_tasks
+        ]
+
+        results = await asyncio.gather(*message_tasks)
+        for (dialog_id, title), (messages, users_map) in zip(fetch_tasks, results):
+            if not messages:
+                continue
+            dialogs.append(
+                {
+                    "id": dialog_id,
+                    "title": f"Задача: {title}",
+                    "type": "chat",
+                    "messages": messages,
+                    "users": users_map,
+                }
+            )
+
+    return dialogs
+
+
+def merge_dialogs(base: Dict[str, Any], extra: List[Dict[str, Any]]) -> Dict[str, Any]:
+    dialogs = base.get("dialogs", [])
+    seen = {str(d.get("id")) for d in dialogs}
+    for d in extra:
+        if str(d.get("id")) in seen:
+            continue
+        dialogs.append(d)
+        seen.add(str(d.get("id")))
+    base["dialogs"] = dialogs
+    base["count"] = len(dialogs)
+    return base
 
 
 def _parse_date(value: str) -> datetime:
@@ -228,6 +329,9 @@ async def fetch_dialog_messages(
     return messages_in_period, users_map
 
 
+TODAY_CACHE_TTL = 300  # 5 минут
+
+
 async def collect_chat_digest(
     client: BitrixClient,
     period: Period,
@@ -237,10 +341,17 @@ async def collect_chat_digest(
     cache: JsonCache,
 ) -> Dict[str, Any]:
     cache_key = f"{period.key}_cl{chat_limit}_tl{top_limit}_mp{max_pages}"
-    cached = cache.get(cache_key)
+    is_today = period.date_from.date() == datetime.now().date() and period.date_to.date() == datetime.now().date()
+
+    # Проверка кеша: для прошлых дат — стандартный TTL, для сегодня — короткий
+    if is_today:
+        cached = cache.get_if_fresh(cache_key, TODAY_CACHE_TTL)
+    else:
+        cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
+    # im.recent.list — всегда вызываем (1 лёгкий запрос)
     recent = await client.call("im.recent.list", {"SKIP_OPENLINES": "Y"})
     items = recent.get("items", []) if isinstance(recent, dict) else []
 
@@ -250,10 +361,40 @@ async def collect_chat_digest(
     filtered.sort(key=lambda x: 0 if x.get("type") == "user" else 1)
     filtered = filtered[:chat_limit]
 
-    semaphore = asyncio.Semaphore(5)
+    # Инкрементальный кеш: для «сегодня» загрузить старый кеш (даже с истёкшим TTL)
+    # и дозагрузить только изменённые диалоги
+    cached_dialog_activity: Dict[str, str] = {}
+    cached_dialogs_map: Dict[str, Dict[str, Any]] = {}
+    if is_today:
+        stale_cached = cache.get_if_fresh(cache_key, 86400)  # читаем за последние сутки
+        if stale_cached and isinstance(stale_cached, dict):
+            cached_dialog_activity = stale_cached.get("dialog_activity", {})
+            for d in stale_cached.get("dialogs", []):
+                did = str(d.get("id"))
+                if did:
+                    cached_dialogs_map[did] = d
 
-    tasks = []
+    # Определить, какие диалоги нужно загрузить
+    to_fetch: List[Dict[str, Any]] = []
+    from_cache: List[Dict[str, Any]] = []
+
     for item in filtered:
+        dialog_id = str(item.get("id"))
+        current_activity = item.get("date_last_activity") or item.get("date_message") or ""
+
+        if (
+            dialog_id in cached_dialogs_map
+            and dialog_id in cached_dialog_activity
+            and cached_dialog_activity[dialog_id] == current_activity
+        ):
+            from_cache.append(cached_dialogs_map[dialog_id])
+        else:
+            to_fetch.append(item)
+
+    # Загрузить только изменённые диалоги
+    semaphore = asyncio.Semaphore(5)
+    tasks = []
+    for item in to_fetch:
         dialog_id = item.get("id")
         tasks.append(
             fetch_dialog_messages(
@@ -268,11 +409,11 @@ async def collect_chat_digest(
 
     results = await asyncio.gather(*tasks)
 
-    dialogs = []
-    for item, (messages, users_map) in zip(filtered, results):
+    fetched_dialogs = []
+    for item, (messages, users_map) in zip(to_fetch, results):
         if not messages:
             continue
-        dialogs.append(
+        fetched_dialogs.append(
             {
                 "id": item.get("id"),
                 "title": item.get("title"),
@@ -282,10 +423,20 @@ async def collect_chat_digest(
             }
         )
 
+    # Объединить кешированные и свежие
+    dialogs = from_cache + fetched_dialogs
+
     dialogs.sort(key=lambda d: (0 if d.get("type") == "user" else 1, -len(d.get("messages", []))))
     dialogs = dialogs[:top_limit]
 
-    payload = {"count": len(dialogs), "dialogs": dialogs}
+    # Построить dialog_activity для будущего сравнения
+    dialog_activity: Dict[str, str] = {}
+    for item in filtered:
+        did = str(item.get("id"))
+        activity = item.get("date_last_activity") or item.get("date_message") or ""
+        dialog_activity[did] = activity
+
+    payload = {"count": len(dialogs), "dialogs": dialogs, "dialog_activity": dialog_activity}
     cache.set(cache_key, payload)
     return payload
 
@@ -351,16 +502,16 @@ async def collect_git_activity(projects_dirs: str, period: Period, cache_file: P
     semaphore = asyncio.Semaphore(6)
 
     async def analyze_repo(repo_path: str) -> Optional[Dict[str, Any]]:
-        since = period.date_from.strftime("%Y-%m-%d")
-        until = (period.date_to + timedelta(days=1)).strftime("%Y-%m-%d")
+        since = period.date_from.strftime("%Y-%m-%d 00:00:00")
+        until = period.date_to.strftime("%Y-%m-%d 23:59:59")
 
         log_cmd = [
             "git",
             "-C",
             repo_path,
             "log",
-            f"--after={since}",
-            f"--before={until}",
+            f"--since={since}",
+            f"--until={until}",
             "--pretty=format:%H|%s|%ai",
             "--no-merges",
         ]
@@ -420,7 +571,15 @@ async def collect_all(args: argparse.Namespace) -> Dict[str, Any]:
             user_id = str(profile.get("ID", ""))
 
         if not user_id:
-            raise ValueError("Не удалось получить ID пользователя через profile")
+            # fallback: parse user id from webhook URL (/rest/<id>/)
+            import re
+            match = re.search(r"/rest/(\d+)/", client.webhook_url + "/")
+            if match:
+                user_id = match.group(1)
+                if not profile:
+                    profile = {"ID": user_id, "NAME": "User", "LAST_NAME": user_id}
+            else:
+                raise ValueError("Не удалось получить ID пользователя через profile")
 
         # Batch: задачи + календарь + профиль
         batch_commands = build_batch_commands(user_id, period)
@@ -445,6 +604,21 @@ async def collect_all(args: argparse.Namespace) -> Dict[str, Any]:
         git_task = collect_git_activity(config.projects_dirs, period, config.projects_cache_file)
 
         chats, git_activity = await asyncio.gather(chat_task, git_task)
+
+        # Подмешать чаты задач (если есть), даже если их нет в im.recent.list
+        task_ids = list({
+            *_extract_task_ids(tasks_created),
+            *_extract_task_ids(tasks_assigned),
+            *_extract_task_ids(tasks_closed),
+            *_extract_task_ids(tasks_deadlines),
+        })
+        task_chat_dialogs = await collect_task_chat_dialogs(
+            client,
+            period,
+            task_ids,
+            max_pages=args.max_pages,
+        )
+        chats = merge_dialogs(chats, task_chat_dialogs)
 
         return {
             "meta": {
@@ -474,7 +648,7 @@ def main() -> int:
     parser.add_argument("--from", dest="date_from", help="Дата начала YYYY-MM-DD")
     parser.add_argument("--to", dest="date_to", help="Дата окончания YYYY-MM-DD")
     parser.add_argument("--yesterday", action="store_true", help="Использовать вчерашнюю дату")
-    parser.add_argument("--chat-limit", type=int, default=20, help="Лимит диалогов")
+    parser.add_argument("--chat-limit", type=int, default=200, help="Лимит диалогов")
     parser.add_argument("--top-limit", type=int, default=15, help="Топ диалогов для дайджеста")
     parser.add_argument("--max-pages", type=int, default=5, help="Макс. страниц сообщений на диалог")
     parser.add_argument("--format", choices=["json"], default="json")
