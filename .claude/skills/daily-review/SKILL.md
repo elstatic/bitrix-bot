@@ -43,162 +43,52 @@ source .env && curl -s "${BITRIX24_WEBHOOK_URL}method.json"
 - Пользователь может попросить обзор за вчера, за неделю, за конкретную дату — адаптируй фильтры.
 - Дата берётся из текущего контекста (сегодня задаётся системой).
 
-## Алгоритм сбора данных
+## Алгоритм сбора данных (оптимизированный)
 
-Все запросы можно выполнять **параллельно** — они независимы. Но сначала нужен ID текущего пользователя.
+Все данные собираются через единый Python‑скрипт с batch запросами, параллельными вызовами и кешем чатов.
 
-### Шаг 0: Получить профиль пользователя
+### Шаг 0: Определить период
 
+- По умолчанию — **вчера** (относительно текущей даты).
+- Можно указать конкретную дату или диапазон.
+
+### Шаг 1: Запустить быстрый сбор
+
+**За вчера:**
 ```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}profile.json"
+python3 .claude/scripts/daily_review/main.py --yesterday
 ```
 
-Поле `result.ID` — ID пользователя. Поле `result.NAME` + `result.LAST_NAME` — имя для отображения.
-
-### Шаг 1: Дайджест переписок
-
-Вызови субагента `chat-digest` через `Task` tool. **ВАЖНО**: НЕ используй `run_in_background: true` — субагенту нужен доступ к инструментам, который недоступен в фоновом режиме.
-
-Передай в промпте:
-- `BITRIX24_WEBHOOK_URL` из `.env` (уже загружен на этапе авторизации)
-- `USER_ID` и `USER_NAME` (из Шага 0)
-- Период: сегодняшняя дата (начало и конец — одна дата)
-- Лимит чатов: 20
-- Топ диалогов для выжимки: 15
-
-```
-Task(
-  subagent_type: "chat-digest",
-  prompt: "Сформируй дайджест переписок Битрикс24.
-    BITRIX24_WEBHOOK_URL: <URL>
-    USER_ID: <ID>
-    USER_NAME: <ИМЯ>
-    Период: с <ДАТА> по <ДАТА>
-    Лимит чатов: 20
-    Топ диалогов: 15",
-  description: "Chat digest"
-)
-```
-
-Результат субагента включи в секцию «Переписки» как есть. Если субагент вернул сообщение об отсутствии переписок — секцию не показывай.
-
-### Шаг 2: Активность по задачам
-
-Используй формат дат `YYYY-MM-DD` и `--data-urlencode` для фильтров с операторами.
-
-Для фильтрации по конкретному дню (например, 3 февраля 2026):
-- `filter[>FIELD]=2026-02-02` (день до)
-- `filter[<FIELD]=2026-02-04` (день после)
-
-#### 2а. Задачи, которые я создал за период
-
+**За конкретную дату:**
 ```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[CREATED_BY]=<USER_ID>' \
-  --data-urlencode 'filter[>CREATED_DATE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<CREATED_DATE]=<ДЕНЬ_ПОСЛЕ>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=STATUS' \
-  -d 'select[]=CREATED_DATE' -d 'select[]=RESPONSIBLE_ID'
+python3 .claude/scripts/daily_review/main.py --date 2026-02-10
 ```
 
-#### 2б. Задачи, которые мне поставили за период
-
+**За диапазон:**
 ```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  --data-urlencode 'filter[>CREATED_DATE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<CREATED_DATE]=<ДЕНЬ_ПОСЛЕ>' \
-  --data-urlencode 'filter[!CREATED_BY]=<USER_ID>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=STATUS' \
-  -d 'select[]=CREATED_DATE' -d 'select[]=CREATED_BY'
+python3 .claude/scripts/daily_review/main.py --from 2026-02-01 --to 2026-02-07
 ```
 
-#### 2в. Задачи, закрытые за период
+Скрипт вернёт JSON со всеми данными:
+- Профиль пользователя
+- Задачи (созданные, поставленные, закрытые, дедлайны)
+- Встречи календаря
+- Чаты (с кешем на 24 часа)
+- Git‑активность по проектам
 
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  -d 'filter[STATUS]=5' \
-  --data-urlencode 'filter[>CLOSED_DATE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<CLOSED_DATE]=<ДЕНЬ_ПОСЛЕ>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=CLOSED_DATE'
-```
+### Кеш чатов
 
-#### 2г. Задачи с горящим дедлайном
+Кеш хранится в `~/.cache/daily-review/chat-digest/`.  
+Если нужно принудительно обновить чаты — удали соответствующий файл кеша.
 
-Задачи, где дедлайн попадает в запрашиваемый период (сегодня или ближайшие дни):
+### Шаг 2: Сформировать отчёт
 
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  --data-urlencode 'filter[!STATUS]=5' \
-  --data-urlencode 'filter[>DEADLINE]=<ДЕНЬ_ДО>' \
-  --data-urlencode 'filter[<DEADLINE]=<ДЕНЬ_ПОСЛЕ>' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'select[]=DEADLINE' -d 'select[]=STATUS'
-```
+Проанализируй JSON и собери отчёт по формату ниже.
 
-#### 2д. Новые комментарии (опционально)
-
-Если результатов по шагам 2а–2г мало, дополнительно проверь комментарии в активных задачах. Стратегия:
-
-1. Получи до 20 активных задач пользователя:
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}tasks.task.list.json" \
-  -d 'filter[RESPONSIBLE_ID]=<USER_ID>' \
-  --data-urlencode 'filter[!STATUS]=5' \
-  -d 'order[ID]=desc' \
-  -d 'select[]=ID' -d 'select[]=TITLE' -d 'start=0'
-```
-
-2. Для каждой задачи запроси последние комментарии:
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}task.commentitem.getlist.json" \
-  -d 'TASKID=<ID>' -d 'ORDER[ID]=desc'
-```
-
-3. Фильтруй: оставь только комментарии за период, где `AUTHOR_ID` ≠ `"0"` (не системные) и `AUTHOR_ID` ≠ `<USER_ID>` (не свои).
-
-### Шаг 3: Встречи из календаря
-
-```bash
-source .env && curl -s "${BITRIX24_WEBHOOK_URL}calendar.event.get.json" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"user","ownerId":<USER_ID>,"from":"<ДАТА_ОТ>","to":"<ДАТА_ДО>"}'
-```
-
-Где `<ДАТА_ОТ>` и `<ДАТА_ДО>` — границы запрашиваемого периода в формате `YYYY-MM-DD`.
-
-Ключевые поля ответа:
-- `ID` — ID события
-- `NAME` — название встречи
-- `DATE_FROM` / `DATE_TO` — начало и конец
-- `DESCRIPTION` — описание
-- `LOCATION` — место/ссылка на звонок
-- `IS_MEETING` — есть ли участники
-- `MEETING_STATUS` — статус участия: `Y` (принял), `N` (отклонил), `Q` (не ответил)
-- `DT_SKIP_TIME` — `Y` если событие на весь день
-
-**Фильтрация**: показывай только события со статусом `Y` или `Q` (принятые или без ответа). События с `N` — пропускай.
-
-### Шаг 4: Активность в локальных проектах
-
-**Сначала** прочитай `PROJECTS_DIRS` из `.env`, чтобы передать папки субагенту:
-
-```bash
-source .env && echo "$PROJECTS_DIRS"
-```
-
-Если `PROJECTS_DIRS` не задана или пуста — используй `~/Projects` по умолчанию.
-
-**Затем** вызови субагента `project-activity-digest` через `Task` tool. **ВАЖНО**: НЕ используй `run_in_background: true` — субагенту нужен доступ к инструментам, который недоступен в фоновом режиме. Передай папки с проектами прямо в промпте:
-
-```
-Task(
-  subagent_type: "project-activity-digest",
-  prompt: "Покажи активность в проектах за период с <ДАТА_ОТ> по <ДАТА_ДО>. Папки с проектами: <ЗНАЧЕНИЕ_PROJECTS_DIRS>",
-  description: "Project activity digest"
-)
-```
+**Правила:**
+- Встречи показывай только со статусом участия `Y` или `Q`.
+- Если чатов нет — секцию «Переписки» пропускай.
+- Если git‑активности нет — секцию «Проекты» пропускай.
 
 Где:
 - `<ДАТА_ОТ>` и `<ДАТА_ДО>` — границы запрашиваемого дня (например, `2026-02-04` и `2026-02-04`)
