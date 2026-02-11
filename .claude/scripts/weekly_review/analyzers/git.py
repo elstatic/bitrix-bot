@@ -40,6 +40,10 @@ class GitAnalyzer:
         Returns:
             Список GitActivity для активных проектов
         """
+        if not projects_dirs or not projects_dirs.strip():
+            self._log("PROJECTS_DIRS не задан — пропускаю анализ git активности")
+            return []
+
         self._log(f"Анализ git активности в {projects_dirs}")
 
         # Получить список проектов (с кешем)
@@ -80,6 +84,9 @@ class GitAnalyzer:
                     return cache_data["projects"]
             except Exception as e:
                 self._log(f"Ошибка чтения кеша: {e}")
+
+        if not projects_dir or not projects_dir.strip():
+            return []
 
         # Сканировать директорию
         self._log(f"Сканирую {projects_dir} для поиска git репозиториев")
@@ -126,8 +133,8 @@ class GitAnalyzer:
 
         try:
             # Получить коммиты за период
-            since = date_from.strftime("%Y-%m-%d")
-            until = date_to.strftime("%Y-%m-%d")
+            since = date_from.strftime("%Y-%m-%d 00:00:00")
+            until = date_to.strftime("%Y-%m-%d 23:59:59")
 
             # git log с форматированием
             log_cmd = [

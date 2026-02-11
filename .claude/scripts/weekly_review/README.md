@@ -22,7 +22,7 @@ pip3 install -r requirements.txt
 # Обязательные переменные
 export BITRIX24_WEBHOOK_URL="https://team.up-advert.ru/rest/1535/CODE/"
 
-# Опционально
+# Опционально (если не задано — сканирование проектов пропускается)
 export PROJECTS_DIRS="~/projects"      # Папки с git-проектами
 ```
 

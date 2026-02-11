@@ -14,7 +14,7 @@ description: "Обзор недели: сводка по задачам, вст�
 
 # Weekly Review Skill
 
-Skill для формирования сводки за неделю: задачи, встречи и переписки из Битрикс24 + активность в локальных проектах через субагента `project-activity-digest`.
+Skill для формирования сводки за неделю: задачи, встречи и переписки из Битрикс24 + активность в локальных проектах по алгоритму `project-activity-digest`.
 
 **Read-only** — skill только читает данные.
 
@@ -65,7 +65,7 @@ WEEK_END=$(date -v-Mon -v-1d +%Y-%m-%d 2>/dev/null || date -d 'last sunday' +%Y-
 
 ## Алгоритм сбора данных
 
-Используется Python-скрипт для максимальной скорости сбора данных через batch API Bitrix24 + субагент для суммаризации чатов.
+Используется Python-скрипт для максимальной скорости сбора данных через batch API Bitrix24 + алгоритм `chat-digest` для суммаризации чатов.
 
 ### Шаг 1: Собрать данные Python-скриптом
 
@@ -87,37 +87,18 @@ python3 .claude/scripts/weekly_review/main.py --week last
 - Форматирует вывод в markdown
 - Обрабатывает ошибки gracefully
 
-### Шаг 2: Получить суммаризацию чатов через субагент
+### Шаг 2: Сформировать дайджест переписок
 
-Параллельно с запуском скрипта (или сразу после) вызови субагент `chat-digest`:
-
-**Сначала** получи webhook URL и период:
-```bash
-source .env && echo "$BITRIX24_WEBHOOK_URL"
-# И вычисли WEEK_START, WEEK_END (из Шага 0 выше)
-```
-
-**Затем** вызови субагент:
-```
-Task(
-  subagent_type: "chat-digest",
-  prompt: "Сформируй дайджест переписок Битрикс24.
-    BITRIX24_WEBHOOK_URL: <URL из .env>
-    USER_ID: <ID из профиля пользователя>
-    USER_NAME: <Имя пользователя>
-    Период: с <WEEK_START> по <WEEK_END>
-    Лимит чатов: 200
-    Топ диалогов: 10",
-  description: "Chat digest for weekly review"
-)
-```
-
-**ВАЖНО**: НЕ используй `run_in_background: true` — субагенту нужен доступ к инструментам.
+В Codex **не использовать Task/субагентов**. Вместо этого:
+1. Получи `BITRIX24_WEBHOOK_URL` из `.env`.
+2. Получи `USER_ID` и `USER_NAME` через `profile.json`.
+3. Выполни алгоритм из раздела **«Агент: chat-digest»** ниже и сформируй секцию «Ключевые переписки».  
+Системные сообщения (author_id = 0, уведомления о вступлениях, авто‑сообщения) игнорируй.
 
 ### Шаг 3: Склеить результаты
 
 1. Возьми вывод Python-скрипта (задачи, встречи, трудозатраты, git)
-2. Вставь вывод субагента в секцию «Ключевые переписки»
+2. Вставь дайджест переписок в секцию «Ключевые переписки»
 3. Отформатируй финальный markdown отчёт
 
 ### Требования
@@ -126,7 +107,7 @@ Task(
 
 **Необходимые переменные в .env:**
 - `BITRIX24_WEBHOOK_URL` — URL вебхука Bitrix24 (обязательно)
-- `PROJECTS_DIRS` (опционально) — папки с проектами, по умолчанию `~/projects`
+- `PROJECTS_DIRS` (опционально) — папки с проектами. Если не задано — сканирование проектов пропускается.
 
 ---
 
@@ -189,6 +170,11 @@ Task(
   https://team.up-advert.ru/workgroups/group/0/tasks/task/view/534433/
 (всего активных: N)
 
+**Чаты задач (из переписок):**
+Если в переписках есть сообщения, явно относящиеся к задачам (ссылка на задачу, номер, обсуждение статуса/дедлайна/результата), добавь их сюда кратким списком:
+- #<ID> «Название» — короткий итог/договорённость/что нужно сделать
+  https://<домен>/workgroups/group/0/tasks/task/view/<ID>/
+
 ### Трудозатраты за неделю: Xч Yмин
 
 | Задача | Время |
@@ -212,7 +198,7 @@ Task(
 - Числовые статусы задач преобразовывай: 2=Ждёт, 3=В работе, 4=На контроле, 5=Завершена, 6=Отложена.
 - Если данных много — показывай топ-10 по каждой секции и указывай общее количество.
 - **Ссылки на задачи**: после каждого упоминания задачи добавляй голый URL на следующей строке с отступом (2 пробела). Домен берётся из `BITRIX24_WEBHOOK_URL` (часть до `/rest/`). Формат: `https://<домен>/workgroups/group/0/tasks/task/view/<ID>/`.
-- **Проекты**: вывод субагента `project-activity-digest` вставляй как есть, без переформатирования.
+- **Проекты**: вывод алгоритма `project-activity-digest` вставляй как есть, без переформатирования. Если `PROJECTS_DIRS` не задан — секцию не показывай.
 
 ## Встроенные инструкции агентов
 
@@ -344,6 +330,8 @@ You are a Project Activity Analyst — an expert at scanning development project
 
 Scan projects in configured directories (from `PROJECTS_DIRS` in `.env`), analyze activity for the user-requested time period, and produce a clear, concise summary of what was done in each active project.
 
+If `PROJECTS_DIRS` is missing or empty, immediately return a short message like "Сканирование проектов пропущено (PROJECTS_DIRS не задан)" and stop.
+
 ## How You Work
 
 ### Step 1: Resolve the Time Period
@@ -465,7 +453,7 @@ Before scanning, check if a recent log (< 1 hour old) already covers the request
 
 ## Edge Cases
 
-- If none of the configured project directories exist, tell the user and suggest running `/setup-env` to configure `PROJECTS_DIRS`
+- If none of the configured project directories exist, return a brief note like "Сканирование проектов пропущено (нет доступных папок)".
 - If no projects had activity in the period, say so clearly
 - If the period is very large (> 3 months), warn that this may take a moment and suggest narrowing down
 - Handle timezone correctly — use the system's local timezone for date comparisons

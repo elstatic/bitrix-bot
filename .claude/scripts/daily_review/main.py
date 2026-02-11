@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterable
 
 # Добавить директории в sys.path для абсолютных импортов
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -65,6 +65,22 @@ def _get_task_chat_id(task: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+async def list_active_task_ids_for_user(client: BitrixClient, user_id: str) -> List[str]:
+    task_ids: set[str] = set()
+
+    async def fetch(filters: Dict[str, Any]):
+        params = {"filter": filters, "select": ["ID"]}
+        items = await client.paginated_call("tasks.task.list", params, max_pages=10)
+        for item in items:
+            task_id = item.get("id") or item.get("ID")
+            if task_id:
+                task_ids.add(str(task_id))
+
+    await fetch({"RESPONSIBLE_ID": user_id, "!STATUS": "5"})
+    await fetch({"CREATED_BY": user_id, "!STATUS": "5"})
+    return list(task_ids)
+
+
 async def collect_task_chat_dialogs(
     client: BitrixClient,
     period: Period,
@@ -89,42 +105,62 @@ async def collect_task_chat_dialogs(
                 tasks.append(value["task"])
 
         fetch_tasks = []
+        fallback_tasks = []
         for task in tasks:
-            chat_id = _get_task_chat_id(task)
-            if not chat_id:
-                continue
-            dialog_id = f"chat{chat_id}"
             title = task.get("title") or task.get("TITLE") or f"Задача {task.get('id', '')}".strip()
-            fetch_tasks.append((dialog_id, title))
+            chat_id = _get_task_chat_id(task)
+            if chat_id:
+                dialog_id = f"chat{chat_id}"
+                fetch_tasks.append((dialog_id, title))
+            else:
+                task_id = str(task.get("id") or task.get("ID") or "")
+                if task_id:
+                    fallback_tasks.append((task_id, title))
 
-        if not fetch_tasks:
-            continue
+        # IM-чаты задач
+        if fetch_tasks:
+            message_tasks = [
+                fetch_dialog_messages(
+                    client,
+                    dialog_id,
+                    period,
+                    max_pages=max_pages,
+                    max_pages_when_empty=3,
+                    semaphore=semaphore,
+                )
+                for dialog_id, _ in fetch_tasks
+            ]
 
-        message_tasks = [
-            fetch_dialog_messages(
-                client,
-                dialog_id,
-                period,
-                max_pages=max_pages,
-                max_pages_when_empty=3,
-                semaphore=semaphore,
-            )
-            for dialog_id, _ in fetch_tasks
-        ]
+            results = await asyncio.gather(*message_tasks)
+            for (dialog_id, title), (messages, users_map) in zip(fetch_tasks, results):
+                if not messages:
+                    continue
+                dialogs.append(
+                    {
+                        "id": dialog_id,
+                        "title": f"Задача: {title}",
+                        "type": "chat",
+                        "messages": messages,
+                        "users": users_map,
+                    }
+                )
 
-        results = await asyncio.gather(*message_tasks)
-        for (dialog_id, title), (messages, users_map) in zip(fetch_tasks, results):
-            if not messages:
-                continue
-            dialogs.append(
-                {
-                    "id": dialog_id,
-                    "title": f"Задача: {title}",
-                    "type": "chat",
-                    "messages": messages,
-                    "users": users_map,
-                }
-            )
+        # fallback: комментарии задач (task.commentitem.getlist)
+        if fallback_tasks:
+            comment_tasks = [fetch_task_comments(client, task_id, period) for task_id, _ in fallback_tasks]
+            comment_results = await asyncio.gather(*comment_tasks)
+            for (task_id, title), (messages, users_map) in zip(fallback_tasks, comment_results):
+                if not messages:
+                    continue
+                dialogs.append(
+                    {
+                        "id": f"task{task_id}",
+                        "title": f"Задача: {title}",
+                        "type": "task_comments",
+                        "messages": messages,
+                        "users": users_map,
+                    }
+                )
 
     return dialogs
 
@@ -140,6 +176,71 @@ def merge_dialogs(base: Dict[str, Any], extra: List[Dict[str, Any]]) -> Dict[str
     base["dialogs"] = dialogs
     base["count"] = len(dialogs)
     return base
+
+
+async def list_active_tasks_for_user(client: BitrixClient, user_id: str) -> Dict[str, str]:
+    tasks: Dict[str, str] = {}
+
+    async def fetch(filter_params: Dict[str, Any]):
+        params = {
+            "filter": filter_params,
+            "select": ["ID", "TITLE"],
+        }
+        items = await client.paginated_call("tasks.task.list", params, max_pages=10)
+        for item in items:
+            task_id = item.get("id") or item.get("ID")
+            if task_id:
+                tasks[str(task_id)] = item.get("title") or item.get("TITLE") or f"Задача {task_id}"
+
+    # Активные задачи пользователя как ответственного
+    await fetch({"RESPONSIBLE_ID": user_id, "!STATUS": "5"})
+    # Активные задачи, созданные пользователем
+    await fetch({"CREATED_BY": user_id, "!STATUS": "5"})
+
+    return tasks
+
+
+def _iter_task_ids(tasks_map: Dict[str, str]) -> Iterable[str]:
+    return tasks_map.keys()
+
+
+async def fetch_task_comments(
+    client: BitrixClient,
+    task_id: str,
+    period: Period,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """Fetch task comments for a task and filter by period."""
+    # Method accepts TASKID; return list of comments
+    resp = await client.call("task.commentitem.getlist", {"TASKID": task_id})
+    if not resp:
+        return [], {}
+
+    comments = resp if isinstance(resp, list) else resp.get("COMMENTS", resp.get("result", []))
+    messages: List[Dict[str, Any]] = []
+    users_map: Dict[str, str] = {}
+    for c in comments or []:
+        date_str = c.get("POST_DATE") or c.get("DATE_CREATE") or c.get("POST_DATE_TS")
+        if not date_str:
+            continue
+        try:
+            dt = parse_bitrix_datetime(date_str)
+        except Exception:
+            continue
+        if not (period.date_from <= dt <= period.date_to):
+            continue
+        author_id = c.get("AUTHOR_ID") or c.get("AUTHOR_ID".lower())
+        author_name = c.get("AUTHOR_NAME") or c.get("AUTHOR_NAME".lower())
+        if author_id and author_name:
+            users_map[str(author_id)] = author_name
+        messages.append(
+            {
+                "id": c.get("ID"),
+                "author_id": author_id,
+                "date": date_str,
+                "text": c.get("POST_MESSAGE") or c.get("MESSAGE") or "",
+            }
+        )
+    return messages, users_map
 
 
 def _parse_date(value: str) -> datetime:
@@ -427,7 +528,8 @@ async def collect_chat_digest(
     dialogs = from_cache + fetched_dialogs
 
     dialogs.sort(key=lambda d: (0 if d.get("type") == "user" else 1, -len(d.get("messages", []))))
-    dialogs = dialogs[:top_limit]
+    if not is_today:
+        dialogs = dialogs[:top_limit]
 
     # Построить dialog_activity для будущего сравнения
     dialog_activity: Dict[str, str] = {}
@@ -605,8 +707,10 @@ async def collect_all(args: argparse.Namespace) -> Dict[str, Any]:
 
         chats, git_activity = await asyncio.gather(chat_task, git_task)
 
-        # Подмешать чаты задач (если есть), даже если их нет в im.recent.list
+        # Подмешать чаты задач (все активные задачи пользователя + задачи за период)
+        active_tasks = await list_active_tasks_for_user(client, user_id)
         task_ids = list({
+            *_iter_task_ids(active_tasks),
             *_extract_task_ids(tasks_created),
             *_extract_task_ids(tasks_assigned),
             *_extract_task_ids(tasks_closed),

@@ -25,12 +25,13 @@ class Config:
 
     def __init__(self):
         self.bitrix_webhook_url: str = os.getenv("BITRIX24_WEBHOOK_URL", "")
-        self.projects_dirs: str = os.getenv("PROJECTS_DIRS", "~/projects")
+        self.projects_dirs: str = os.getenv("PROJECTS_DIRS", "")
 
         if not self.bitrix_webhook_url:
             raise ValueError("BITRIX24_WEBHOOK_URL не задан в .env")
 
-        self.projects_dirs = os.path.expanduser(self.projects_dirs)
+        if self.projects_dirs:
+            self.projects_dirs = os.path.expanduser(self.projects_dirs)
 
     @property
     def cache_dir(self) -> Path:

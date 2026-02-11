@@ -70,11 +70,10 @@ git clone https://github.com/elstatic/bitrix-bot.git .
 ```bash
 cat > .env << 'EOF'
 export BITRIX24_WEBHOOK_URL="https://ваш-домен.bitrix24.ru/rest/USER_ID/WEBHOOK_CODE/"
-export PROJECTS_DIRS="~/Projects"
 EOF
 ```
 
-`PROJECTS_DIRS` — папки с git-проектами для сводок активности. Несколько папок через `:`:
+`PROJECTS_DIRS` — **опционально**. Папки с git-проектами для сводок активности. Если не задано — сканирование проектов пропускается. Несколько папок через `:`:
 
 ```bash
 export PROJECTS_DIRS="~/Projects:~/work/clients"

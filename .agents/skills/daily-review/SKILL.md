@@ -101,9 +101,13 @@ python3 .claude/scripts/daily_review/main.py --from 2026-02-01 --to 2026-02-07
 
 Где:
 - `<ДАТА_ОТ>` и `<ДАТА_ДО>` — границы запрашиваемого дня (например, `2026-02-04` и `2026-02-04`)
-- `<ЗНАЧЕНИЕ_PROJECTS_DIRS>` — значение переменной, прочитанное из `.env` (например, `~/Projects` или `~/Projects:~/work/clients`)
+- `<ЗНАЧЕНИЕ_PROJECTS_DIRS>` — значение переменной, прочитанное из `.env` (например, `~/Projects` или `~/Projects:~/work/clients`). Может быть пустым — тогда секцию «Проекты» пропусти.
 
-Результат субагента включи в итоговую сводку в секцию «Проекты». Если за день коммитов не было — секцию не показывай.
+Для секции «Переписки» используй алгоритм из раздела **«Агент: chat-digest»** ниже, но работай по данным `chats` из JSON (без дополнительных API вызовов, если данные уже есть).  
+Для ежедневного обзора включай **все рабочие диалоги** за день (не только топ).
+Системные сообщения (author_id = 0, уведомления о вступлениях, авто‑сообщения) игнорируй.
+
+Результат project-activity-digest включи в итоговую сводку в секцию «Проекты». Если `PROJECTS_DIRS` не задан или за день коммитов не было — секцию не показывай.
 
 ---
 
@@ -158,6 +162,17 @@ python3 .claude/scripts/daily_review/main.py --from 2026-02-01 --to 2026-02-07
 - #626879 «Файл рентабельности» — Осташева: «Проверь формулу в колонке D»
   https://team.up-advert.ru/workgroups/group/0/tasks/task/view/626879/
 
+**Чаты задач (из переписок):**
+Если в переписках есть сообщения, явно относящиеся к задачам, добавь их сюда кратким списком.  
+Считать задачей любое из:
+- ссылка на задачу (URL `/tasks/task/view/<ID>/`)
+- вложение/карточка задачи в сообщении (ATTACH/GRID с ссылкой или названием задачи)
+- явное упоминание ID/названия задачи при обсуждении статуса/дедлайна/результата
+
+- Если в чате задачи идёт обсуждение, обязательно добавь сюда, даже если задача не в списках created/assigned/closed/deadlines.
+- #<ID> «Название» — короткий итог/договорённость/что нужно сделать
+  https://<домен>/workgroups/group/0/tasks/task/view/<ID>/
+
 ### Проекты (локальная разработка)
 <вывод от project-activity-digest>
 ```
@@ -172,7 +187,7 @@ python3 .claude/scripts/daily_review/main.py --from 2026-02-01 --to 2026-02-07
 - Числовые статусы задач преобразовывай: 2=Ждёт, 3=В работе, 4=На контроле, 5=Завершена, 6=Отложена.
 - Если данных много — показывай топ-10 по каждой секции и указывай общее количество.
 - **Ссылки на задачи**: после каждого упоминания задачи добавляй голый URL на следующей строке с отступом (2 пробела). Домен берётся из `BITRIX24_WEBHOOK_URL` (часть до `/rest/`). Формат: `https://<домен>/workgroups/group/0/tasks/task/view/<ID>/`. Голый URL кликабелен в Terminal.app.
-- **Проекты**: вывод субагента `project-activity-digest` вставляй как есть, без переформатирования. Если за день коммитов не было — секцию не показывай.
+- **Проекты**: вывод алгоритма `project-activity-digest` вставляй как есть, без переформатирования. Если `PROJECTS_DIRS` не задан — секцию не показывай. Если за день коммитов не было — секцию не показывай.
 
 ## Встроенные инструкции агентов
 
@@ -304,6 +319,8 @@ You are a Project Activity Analyst — an expert at scanning development project
 
 Scan projects in configured directories (from `PROJECTS_DIRS` in `.env`), analyze activity for the user-requested time period, and produce a clear, concise summary of what was done in each active project.
 
+If `PROJECTS_DIRS` is missing or empty, immediately return a short message like "Сканирование проектов пропущено (PROJECTS_DIRS не задан)" and stop.
+
 ## How You Work
 
 ### Step 1: Resolve the Time Period
@@ -425,7 +442,7 @@ Before scanning, check if a recent log (< 1 hour old) already covers the request
 
 ## Edge Cases
 
-- If none of the configured project directories exist, tell the user and suggest running `/setup-env` to configure `PROJECTS_DIRS`
+- If none of the configured project directories exist, return a brief note like "Сканирование проектов пропущено (нет доступных папок)".
 - If no projects had activity in the period, say so clearly
 - If the period is very large (> 3 months), warn that this may take a moment and suggest narrowing down
 - Handle timezone correctly — use the system's local timezone for date comparisons

@@ -13,7 +13,7 @@ pip3 install -r requirements.txt
 
 ```bash
 export BITRIX24_WEBHOOK_URL="https://team.up-advert.ru/rest/..."
-export PROJECTS_DIRS="~/projects"  # опционально
+export PROJECTS_DIRS="~/projects"  # опционально (если не задано — сканирование проектов пропускается)
 ```
 
 **API ключи не нужны!** Суммаризация чатов делается через субагент.
@@ -47,7 +47,7 @@ source .env && python3 .claude/scripts/weekly_review/main.py --week current
 ✅ Собирает задачи из Bitrix24 (созданные, закрытые, активные)
 ✅ Загружает встречи из календаря
 ✅ Подсчитывает трудозатраты
-✅ Сканирует git-активность в локальных проектах
+✅ Сканирует git-активность в локальных проектах (если задан `PROJECTS_DIRS`)
 
 **Примечание:** Чаты суммаризуются отдельно через субагент `chat-digest` в skill.
 

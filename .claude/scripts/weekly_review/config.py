@@ -27,14 +27,15 @@ class Config:
     def __init__(self):
         """Загрузить конфигурацию из .env."""
         self.bitrix_webhook_url: str = os.getenv("BITRIX24_WEBHOOK_URL", "")
-        self.projects_dirs: str = os.getenv("PROJECTS_DIRS", "~/projects")
+        self.projects_dirs: str = os.getenv("PROJECTS_DIRS", "")
 
         # Валидация обязательных параметров
         if not self.bitrix_webhook_url:
             raise ValueError("BITRIX24_WEBHOOK_URL не задан в .env")
 
-        # Развернуть тильду в путях
-        self.projects_dirs = os.path.expanduser(self.projects_dirs)
+        # Развернуть тильду в путях (если задано)
+        if self.projects_dirs:
+            self.projects_dirs = os.path.expanduser(self.projects_dirs)
 
     @property
     def cache_dir(self) -> Path:
