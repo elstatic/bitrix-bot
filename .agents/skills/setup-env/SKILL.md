@@ -89,6 +89,11 @@ export PROJECTS_DIRS="~/Projects"  # опционально
 source .env && curl -s "${BITRIX24_WEBHOOK_URL}profile.json"
 ```
 
+Если `curl` в этой среде не резолвит домен, fallback:
+```bash
+python3 .claude/scripts/bitrix_call.py profile
+```
+
 Если запрос вернул данные пользователя — сообщи об успехе и покажи имя подключённого аккаунта.
 
 Если ошибка — сообщи пользователю и предложи проверить URL.

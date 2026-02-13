@@ -452,14 +452,42 @@ async def collect_chat_digest(
     if cached is not None:
         return cached
 
-    # im.recent.list — всегда вызываем (1 лёгкий запрос)
-    recent = await client.call("im.recent.list", {"SKIP_OPENLINES": "Y"})
-    items = recent.get("items", []) if isinstance(recent, dict) else []
+    # im.recent.list c пагинацией по LAST_MESSAGE_DATE (иначе API обычно даёт только ~20 диалогов)
+    items: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    last_message_date: Optional[str] = None
+
+    while len(items) < chat_limit:
+        params: Dict[str, Any] = {"SKIP_OPENLINES": "Y"}
+        if last_message_date:
+            params["LAST_MESSAGE_DATE"] = last_message_date
+
+        recent = await client.call("im.recent.list", params)
+        page_items = recent.get("items", []) if isinstance(recent, dict) else []
+        if not page_items:
+            break
+
+        added = 0
+        for item in page_items:
+            dialog_id = str(item.get("id"))
+            if not dialog_id or dialog_id in seen_ids:
+                continue
+            seen_ids.add(dialog_id)
+            items.append(item)
+            added += 1
+            if len(items) >= chat_limit:
+                break
+
+        # Для следующей страницы используем дату последнего сообщения в текущей
+        last = page_items[-1] if page_items else {}
+        next_date = last.get("date_message") or last.get("DATE_MESSAGE")
+        if not next_date or added == 0:
+            break
+        last_message_date = next_date
 
     filtered = _filter_recent_items(items, period)
 
-    # Приоритет: личные диалоги, затем групповые
-    filtered.sort(key=lambda x: 0 if x.get("type") == "user" else 1)
+    # Не меняем порядок API (обычно уже по недавней активности), чтобы не терять групповые чаты.
     filtered = filtered[:chat_limit]
 
     # Инкрементальный кеш: для «сегодня» загрузить старый кеш (даже с истёкшим TTL)
@@ -527,8 +555,10 @@ async def collect_chat_digest(
     # Объединить кешированные и свежие
     dialogs = from_cache + fetched_dialogs
 
-    dialogs.sort(key=lambda d: (0 if d.get("type") == "user" else 1, -len(d.get("messages", []))))
-    if not is_today:
+    # Сначала самые активные диалоги; тип используем только как вторичный критерий.
+    dialogs.sort(key=lambda d: (-len(d.get("messages", [])), 0 if d.get("type") == "user" else 1))
+    # top_limit <= 0 означает "без ограничения"
+    if not is_today and top_limit > 0:
         dialogs = dialogs[:top_limit]
 
     # Построить dialog_activity для будущего сравнения

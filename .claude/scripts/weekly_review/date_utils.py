@@ -22,7 +22,8 @@ def get_week_boundaries(week: str = "current") -> Tuple[datetime, datetime]:
 
     if week == "current":
         date_from = current_week_monday
-        date_to = current_week_monday + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        # Текущая неделя: от понедельника до конца текущего дня (а не до воскресенья)
+        date_to = datetime.now().replace(hour=23, minute=59, second=59, microsecond=0)
     elif week == "last":
         date_from = current_week_monday - timedelta(days=7)
         date_to = current_week_monday - timedelta(seconds=1)

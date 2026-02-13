@@ -9,6 +9,8 @@ description: "Дайджест переписок Битрикс24. Активи
 - Вместо `AskUserQuestion` используй `functions.request_user_input`.
 - Не используй `Task(...)`/субагентов — всё выполняй в этой сессии.
 - Команды выполняй напрямую в этой сессии.
+- Для вызовов Bitrix24 API используй `bash/curl` как основной путь.
+- Fallback: если в конкретной среде `curl` не резолвит домен, используй `python3 .claude/scripts/bitrix_call.py`.
 
 ## Оригинальная инструкция
 
@@ -27,7 +29,7 @@ All parameters come via the prompt from the caller:
 - **USER_NAME** — current user's name (to identify "my" messages)
 - **Period** — start date and end date (YYYY-MM-DD format)
 - **Chat limit** — how many chats to load. For daily use a high limit (e.g., 200) to include all working dialogs.
-- **Top dialogs limit** — ignored for daily reviews; include all relevant dialogs for the day. For weekly reviews may still limit.
+- **Top dialogs limit** — `0` means no limit. For daily reviews usually `0`; for weekly use `0` or a high value.
 
 ## Algorithm
 
@@ -50,7 +52,7 @@ curl -s "${WEBHOOK_URL}im.recent.list.json" -d 'SKIP_OPENLINES=Y'
 From `result.items`:
 1. Exclude service chats: where `title` contains "Уведомления" or "Notifications", or `type` = `notification`
 2. Exclude chats where `date_last_activity` is **before** `DATE_FROM` (they definitely have no messages in the period)
-3. From the remaining, take up to `CHAT_LIMIT` chats (priority: personal `user` > group `chat`)
+3. From the remaining, take up to `CHAT_LIMIT` chats **without personal-first priority**, to avoid losing active group chats.
 
 Key fields:
 - `id` — DIALOG_ID (number for personal, `chatXXX` for group)
@@ -81,7 +83,7 @@ curl -s "${WEBHOOK_URL}im.dialog.messages.get.json" \
 ### Step 4: Select Dialogs
 
 For **daily** digest: include **all dialogs** with meaningful work content in the period (no top limit).  
-For **weekly** digest: you may limit to top N by message count if the list is too long.
+For **weekly** digest: prefer all meaningful dialogs; only limit if explicitly needed (by message count).
 
 ### Step 5: Analyze and Create Digest
 
@@ -123,9 +125,11 @@ If no dialogs with meaningful content were found for the period, return:
 
 1. **Always respond in Russian** — the output will be inserted into a Russian report
 2. **Do NOT pipe curl into python** in one command — call curl separately without pipes. If post-processing is needed, do it in a separate Bash call or save curl result to a variable
-3. **Do NOT use `source .env`** — the webhook URL comes via the prompt, call curl directly with the URL
-4. **Be concise** — summarize, don't quote messages verbatim
-5. **Focus on work content** — skip casual chatter, system messages, empty pleasantries
-6. **Handle errors gracefully** — if a chat fails to load, skip it and continue
-7. **Respect API limits** — max 20 messages per request, paginate correctly
-8. **Date filtering** — compare message `date` field with the period boundaries; messages exactly on `DATE_FROM` or `DATE_TO` are included
+3. **Do NOT use `source .env` in this skill** — the webhook URL comes via prompt, call curl directly with the URL
+4. If `curl` cannot resolve host in this environment, fallback to:
+   `python3 .claude/scripts/bitrix_call.py <method> --webhook "$WEBHOOK_URL" --params '{...}'`
+5. **Be concise** — summarize, don't quote messages verbatim
+6. **Focus on work content** — skip casual chatter, system messages, empty pleasantries
+7. **Handle errors gracefully** — if a chat fails to load, skip it and continue
+8. **Respect API limits** — max 20 messages per request, paginate correctly
+9. **Date filtering** — compare message `date` field with the period boundaries; messages exactly on `DATE_FROM` or `DATE_TO` are included
