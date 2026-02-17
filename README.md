@@ -25,6 +25,34 @@ claude
 
 При первом запуске откроется браузер для входа в аккаунт Anthropic.
 
+### 1b. Установить Codex (опционально)
+
+Скиллы работают и в [Codex](https://developers.openai.com/codex/cli/) от OpenAI. Требуется подписка ChatGPT Plus, Pro, Business, Edu или Enterprise.
+
+#### macOS — десктоп-приложение
+
+Скачайте `.dmg` с официального сайта и установите как обычное приложение:
+
+https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
+
+Или установите CLI через Homebrew:
+
+```bash
+brew install codex
+```
+
+#### Windows — только CLI
+
+Десктоп-приложения для Windows пока нет ([можно подписаться на уведомление](https://openai.com/form/codex-app/)). Установите CLI через npm:
+
+```bash
+npm install -g @openai/codex
+```
+
+> Для лучшей совместимости на Windows рекомендуется использовать WSL.
+
+После установки запустите `codex` и авторизуйтесь через аккаунт ChatGPT или API-ключ OpenAI.
+
 ### 2. Клонировать репозиторий
 
 ```bash
