@@ -54,6 +54,8 @@ def parse_bitrix_datetime(dt_str: str) -> datetime:
     formats = [
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y",
         "%Y-%m-%d",
     ]
 

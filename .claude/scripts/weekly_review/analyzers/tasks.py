@@ -116,6 +116,37 @@ class TaskAnalyzer:
 
         return tasks
 
+    async def collect_recently_active_task_ids(
+        self,
+        date_from: datetime,
+    ) -> List[str]:
+        """
+        Собрать ID задач с недавней активностью, где пользователь участник.
+
+        Использует MEMBER фильтр (ответственный, соисполнитель, наблюдатель)
+        и сортировку по ACTIVITY_DATE desc, чтобы найти задачи с треком.
+        """
+        self._log(f"Сбор задач с активностью после {date_from}")
+
+        from_str = format_bitrix_date_filter(date_from)
+
+        result = await self.client.paginated_call(
+            "tasks.task.list",
+            params={
+                "filter": {
+                    "MEMBER": self.user_id,
+                    ">=ACTIVITY_DATE": from_str,
+                },
+                "select": ["ID"],
+                "order": {"ACTIVITY_DATE": "desc"},
+            },
+            max_pages=4,  # До 200 задач
+        )
+
+        task_ids = [str(t.get("id", t.get("ID", ""))) for t in result if t]
+        self._log(f"Найдено {len(task_ids)} задач с недавней активностью")
+        return task_ids
+
     async def collect_time_entries(
         self,
         task_ids: List[str],
@@ -123,55 +154,86 @@ class TaskAnalyzer:
         date_to: datetime,
     ) -> List[TimeEntry]:
         """
-        Собрать трудозатраты по списку задач через batch запрос.
+        Собрать трудозатраты по списку задач через batch запросы.
 
-        Args:
-            task_ids: Список ID задач (до 50 штук)
-            date_from: Начало периода
-            date_to: Конец периода
+        Поддерживает >50 задач — разбивает на несколько batch-вызовов.
         """
         if not task_ids:
             return []
 
-        # Ограничить до 50 задач (лимит batch)
-        task_ids = task_ids[:50]
         self._log(f"Сбор трудозатрат по {len(task_ids)} задачам")
 
-        # Построить batch запрос
-        builder = BatchRequestBuilder()
-        for task_id in task_ids:
-            builder.add_time_entries(f"time_{task_id}", task_id)
-
-        batch_result = await self.client.batch(builder.build())
-
-        # Парсинг результатов
         entries = []
-        for key, result in batch_result.items():
-            if not result or not isinstance(result, list):
-                continue
+        # Разбить на чанки по 50 (лимит batch)
+        for i in range(0, len(task_ids), 50):
+            chunk = task_ids[i:i + 50]
+            self._log(f"  batch {i // 50 + 1}: {len(chunk)} задач")
 
-            for entry_data in result:
-                try:
-                    created_date = parse_bitrix_datetime(entry_data.get("CREATED_DATE", ""))
+            builder = BatchRequestBuilder()
+            for task_id in chunk:
+                builder.add_time_entries(f"time_{task_id}", task_id)
 
-                    # Фильтр по дате
-                    if not (date_from <= created_date <= date_to):
-                        continue
+            batch_result = await self.client.batch(builder.build())
 
-                    # Фильтр по пользователю
-                    if str(entry_data.get("USER_ID")) != self.user_id:
-                        continue
+            for key, result in batch_result.items():
+                if not result or not isinstance(result, list):
+                    continue
 
-                    entry = TimeEntry(
-                        task_id=str(entry_data.get("TASK_ID", "")),
-                        user_id=str(entry_data.get("USER_ID", "")),
-                        seconds=int(entry_data.get("SECONDS", 0)),
-                        comment=entry_data.get("COMMENT_TEXT", ""),
-                        created_date=created_date,
-                    )
-                    entries.append(entry)
-                except Exception as e:
-                    self._log(f"Ошибка парсинга трудозатрат: {e}")
+                for entry_data in result:
+                    try:
+                        created_date = parse_bitrix_datetime(entry_data.get("CREATED_DATE", ""))
+
+                        # Фильтр по дате
+                        if not (date_from <= created_date <= date_to):
+                            continue
+
+                        # Фильтр по пользователю
+                        if str(entry_data.get("USER_ID")) != self.user_id:
+                            continue
+
+                        entry = TimeEntry(
+                            task_id=str(entry_data.get("TASK_ID", "")),
+                            user_id=str(entry_data.get("USER_ID", "")),
+                            seconds=int(entry_data.get("SECONDS", 0)),
+                            comment=entry_data.get("COMMENT_TEXT", ""),
+                            created_date=created_date,
+                        )
+                        entries.append(entry)
+                    except Exception as e:
+                        self._log(f"Ошибка парсинга трудозатрат: {e}")
 
         self._log(f"Собрано {len(entries)} записей трудозатрат")
         return entries
+
+    async def collect_task_titles(
+        self,
+        task_ids: List[str],
+    ) -> Dict[str, str]:
+        """
+        Получить названия задач по ID через batch запрос.
+
+        Returns:
+            Словарь {task_id: title}
+        """
+        if not task_ids:
+            return {}
+
+        titles = {}
+        for i in range(0, len(task_ids), 50):
+            chunk = task_ids[i:i + 50]
+            builder = BatchRequestBuilder()
+            for task_id in chunk:
+                builder.add_task_list(
+                    f"title_{task_id}",
+                    filters={"ID": task_id},
+                    select=["ID", "TITLE"],
+                )
+
+            batch_result = await self.client.batch(builder.build())
+            for key, result in batch_result.items():
+                if not result or "tasks" not in result:
+                    continue
+                for t in result["tasks"]:
+                    titles[str(t["id"])] = t.get("title", "Без названия")
+
+        return titles

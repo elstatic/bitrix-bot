@@ -85,19 +85,25 @@ class WeeklyReviewCollector:
             tasks_data,
             meetings,
             git_activity,
+            recently_active_ids,
         ) = await asyncio.gather(
             self.task_analyzer.collect_tasks(date_from, date_to),
             self.meeting_analyzer.collect_meetings(date_from, date_to),
             self.git_analyzer.analyze_period(self.projects_dirs, date_from, date_to),
+            self.task_analyzer.collect_recently_active_task_ids(date_from),
         )
 
         # Чаты не собираются - skill вызовет субагент chat-digest отдельно
         chat_summaries = []
 
         # Собрать уникальные ID задач для загрузки трудозатрат
+        # Объединяем задачи из основных списков + задачи с недавней активностью
         task_ids = set()
         for task_list in tasks_data.values():
             task_ids.update(task.id for task in task_list)
+        task_ids.update(recently_active_ids)
+
+        self._log(f"Всего уникальных задач для трудозатрат: {len(task_ids)}")
 
         # Загрузить трудозатраты
         time_entries = []
@@ -105,6 +111,24 @@ class WeeklyReviewCollector:
             time_entries = await self.task_analyzer.collect_time_entries(
                 list(task_ids), date_from, date_to
             )
+
+        # Загрузить названия задач с трудозатратами, которых нет в основных списках
+        known_ids = set()
+        for task_list in tasks_data.values():
+            known_ids.update(task.id for task in task_list)
+        unknown_ids = [e.task_id for e in time_entries if e.task_id not in known_ids]
+        if unknown_ids:
+            extra_titles = await self.task_analyzer.collect_task_titles(
+                list(set(unknown_ids))
+            )
+            # Добавить в tasks_active как заглушки для поиска названий
+            for tid, title in extra_titles.items():
+                from models import Task
+                tasks_data["active"].append(Task(
+                    id=tid, title=title, status="0",
+                    responsible_id="", creator_id="",
+                    created_date=date_from,
+                ))
 
         self._log("Сбор данных завершён")
 

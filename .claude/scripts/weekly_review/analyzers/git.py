@@ -3,6 +3,8 @@
 import asyncio
 import sys
 import json
+import os
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
@@ -17,6 +19,35 @@ class GitAnalyzer:
         self.cache_file = cache_file
         self.debug = debug
         self._projects_cache: Optional[List[str]] = None
+
+    @staticmethod
+    def _parse_projects_dirs(projects_dirs: str) -> List[Path]:
+        """Разобрать PROJECTS_DIRS с поддержкой Unix/Windows форматов."""
+        raw = (projects_dirs or "").strip()
+        if not raw:
+            return []
+
+        parts: List[str]
+        if os.pathsep in raw:
+            parts = raw.split(os.pathsep)
+        elif ";" in raw:
+            parts = raw.split(";")
+        elif ":" in raw and not re.match(r"^[A-Za-z]:[\\/]", raw):
+            # Legacy-разделитель ":" (актуален для Unix-окружений).
+            parts = raw.split(":")
+        else:
+            parts = [raw]
+
+        roots: List[Path] = []
+        for part in parts:
+            item = part.strip()
+            if not item:
+                continue
+            path = Path(item).expanduser()
+            if path.exists():
+                roots.append(path)
+
+        return roots
 
     def _log(self, message: str):
         """Вывести отладочное сообщение."""
@@ -65,48 +96,51 @@ class GitAnalyzer:
         self._log(f"Активных проектов: {len(active_projects)}")
         return active_projects
 
-    async def _get_projects(self, projects_dir: str) -> List[str]:
+    async def _get_projects(self, projects_dirs: str) -> List[str]:
         """
         Получить список git репозиториев с кешированием.
 
         Кеш действителен 24 часа.
         """
+        roots = self._parse_projects_dirs(projects_dirs)
+        if not roots:
+            self._log("Не удалось разобрать PROJECTS_DIRS или директории не существуют")
+            return []
+
+        roots_key = [str(p) for p in roots]
+
         # Проверить кеш
         if self.cache_file.exists():
             try:
                 cache_data = json.loads(self.cache_file.read_text())
                 cache_time = datetime.fromisoformat(cache_data["timestamp"])
                 cache_age = (datetime.now() - cache_time).total_seconds()
+                cached_roots = cache_data.get("projects_dirs", [])
 
-                # Кеш действителен 24 часа
-                if cache_age < 86400:
+                # Кеш действителен 24 часа и только для того же набора корней.
+                if cache_age < 86400 and cached_roots == roots_key:
                     self._log(f"Использую кеш проектов (возраст: {cache_age:.0f}s)")
                     return cache_data["projects"]
             except Exception as e:
                 self._log(f"Ошибка чтения кеша: {e}")
 
-        if not projects_dir or not projects_dir.strip():
-            return []
-
         # Сканировать директорию
-        self._log(f"Сканирую {projects_dir} для поиска git репозиториев")
-
-        projects_path = Path(projects_dir).expanduser()
-        if not projects_path.exists():
-            self._log(f"Директория не существует: {projects_path}")
-            return []
+        self._log(f"Сканирую корни для поиска git репозиториев: {roots_key}")
 
         projects = []
-        for item in projects_path.iterdir():
-            if item.is_dir() and (item / ".git").exists():
-                projects.append(str(item))
+        for root in roots:
+            for item in root.iterdir():
+                if item.is_dir() and (item / ".git").exists():
+                    projects.append(str(item))
 
         # Сохранить в кеш
         try:
             cache_data = {
                 "timestamp": datetime.now().isoformat(),
+                "projects_dirs": roots_key,
                 "projects": projects,
             }
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
             self.cache_file.write_text(json.dumps(cache_data, indent=2))
             self._log(f"Кеш обновлён: {len(projects)} проектов")
         except Exception as e:
@@ -172,12 +206,14 @@ class GitAnalyzer:
             if not commits:
                 return None
 
-            # Статистика изменений
+            # Статистика изменений за период.
             stat_cmd = [
-                "git", "-C", str(path), "diff",
+                "git", "-C", str(path), "log",
                 f"--since={since}",
                 f"--until={until}",
+                "--pretty=tformat:",
                 "--shortstat",
+                "--no-merges",
             ]
 
             process = await asyncio.create_subprocess_exec(
@@ -192,16 +228,23 @@ class GitAnalyzer:
             insertions = 0
             deletions = 0
 
-            stat_line = stdout.decode("utf-8").strip()
-            if stat_line:
-                parts = stat_line.split(",")
-                for part in parts:
-                    if "file" in part:
-                        files_changed = int(part.split()[0])
-                    elif "insertion" in part:
-                        insertions = int(part.split()[0])
-                    elif "deletion" in part:
-                        deletions = int(part.split()[0])
+            stat_text = stdout.decode("utf-8").strip()
+            if stat_text:
+                for line in stat_text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = [p.strip() for p in line.split(",")]
+                    for part in parts:
+                        tokens = part.split()
+                        if not tokens:
+                            continue
+                        if "file" in part:
+                            files_changed += int(tokens[0])
+                        elif "insertion" in part:
+                            insertions += int(tokens[0])
+                        elif "deletion" in part:
+                            deletions += int(tokens[0])
 
             return GitActivity(
                 project_name=project_name,

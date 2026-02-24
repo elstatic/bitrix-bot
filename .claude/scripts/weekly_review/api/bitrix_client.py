@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import ssl
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
@@ -9,6 +10,18 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
 _executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _make_ssl_context() -> ssl.SSLContext:
+    """Создать SSL-контекст с сертификатами (certifi → системные → без проверки)."""
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        return ctx
+    except ImportError:
+        pass
+    # Fallback: стандартный контекст (работает если системные серты доступны)
+    return ssl.create_default_context()
 
 
 class BitrixClient:
@@ -24,6 +37,7 @@ class BitrixClient:
         """
         self.webhook_url = webhook_url.rstrip("/")
         self.debug = debug
+        self._ssl_ctx = _make_ssl_context()
 
     async def __aenter__(self):
         """Вход в контекст (no-op, сессия не нужна)."""
@@ -42,7 +56,7 @@ class BitrixClient:
         """Синхронный POST-запрос — вызывается в executor."""
         data = json.dumps(payload).encode("utf-8")
         req = Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=30, context=self._ssl_ctx) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     async def _async_post(self, url: str, payload: dict) -> dict:
