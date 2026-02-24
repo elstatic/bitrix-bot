@@ -6,7 +6,7 @@ description: "Обзор дня: сводка по чатам, задачам, �
 # daily-review (Codex)
 
 ## Codex адаптация
-- Вместо `AskUserQuestion` используй `functions.request_user_input`.
+- Для уточнений и подтверждений используй `functions.request_user_input` (или обычный вопрос в чате, если инструмент недоступен).
 - Не используй `Task(...)`/субагентов — их алгоритмы встроены ниже (если упомянуты).
 - Команды из оригинала выполняй напрямую в этой сессии.
 
@@ -26,6 +26,11 @@ Skill для формирования сводки рабочего дня из 
 
 ```bash
 source .env && curl -s "${BITRIX24_WEBHOOK_URL}method.name.json" ...
+```
+
+Для Windows (PowerShell/CMD) не используй `source .env`. Кроссплатформенный вариант:
+```bash
+python3 .claude/scripts/bitrix_call.py method.name --params '{"KEY":"VALUE"}'
 ```
 
 Если `.env` отсутствует или переменная не задана, сообщи пользователю:
@@ -92,7 +97,7 @@ python3 .claude/scripts/daily_review/main.py --from 2026-02-01 --to 2026-02-07
 
 Где:
 - `<ДАТА_ОТ>` и `<ДАТА_ДО>` — границы запрашиваемого дня (например, `2026-02-04` и `2026-02-04`)
-- `<ЗНАЧЕНИЕ_PROJECTS_DIRS>` — значение переменной, прочитанное из `.env` (например, `~/Projects` или `~/Projects:~/work/clients`). Может быть пустым — тогда секцию «Проекты» пропусти.
+- `<ЗНАЧЕНИЕ_PROJECTS_DIRS>` — значение переменной, прочитанное из `.env` (например, `~/Projects`, `~/Projects:~/work/clients` или `C:\Projects;D:\Clients`). Может быть пустым — тогда секцию «Проекты» пропусти.
 
 Для секции «Переписки» используй алгоритм из раздела **«Агент: chat-digest»** ниже, но работай по данным `chats` из JSON (без дополнительных API вызовов, если данные уже есть).  
 Для ежедневного обзора включай **все рабочие диалоги** за день (не только топ).
@@ -333,17 +338,14 @@ If the period is ambiguous, ask the user to clarify before proceeding.
 
 Determine which directories to scan for projects. Use the **first available** source:
 
-**Source 1 (preferred):** Check if the caller passed directories in the prompt (e.g., "Папки с проектами: ~/Projects:~/work/clients"). If present — use them directly. This is the most reliable method because it avoids permission issues.
+**Source 1 (preferred):** Check if the caller passed directories in the prompt (e.g., "Папки с проектами: ~/Projects:~/work/clients" или `C:\Projects;D:\Clients`). If present — use them directly. This is the most reliable method because it avoids permission issues.
 
-**Source 2 (fallback):** Read `PROJECTS_DIRS` from `.env` in the project root:
-```bash
-source .env 2>/dev/null && echo "$PROJECTS_DIRS"
-```
+**Source 2 (fallback):** Read `PROJECTS_DIRS` directly from `.env` in the project root (without `source .env`).
 
 **Source 3 (default):** If neither source provides directories, fall back to `~/Projects`.
 
 After resolving the raw value:
-1. Split by `:` to get a list of directories
+1. Split by platform separator (`:` on Unix/macOS, `;` on Windows). Legacy `:` value on Windows тоже поддерживай, если это не drive-letter путь.
 2. Expand `~` to the user's home directory in each path
 3. For each directory, verify it exists. If a directory doesn't exist, skip it and note it
 4. If NONE of the directories exist, inform the user and stop
@@ -351,6 +353,7 @@ After resolving the raw value:
 Example values:
 - `~/Projects` → scan `~/Projects`
 - `~/Projects:~/work/clients` → scan both directories
+- `C:\Projects;D:\Clients` → scan both directories
 
 ### Step 2: Check the Cache
 

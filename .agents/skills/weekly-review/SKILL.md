@@ -6,7 +6,7 @@ description: "Обзор недели: сводка по задачам, вст�
 # weekly-review (Codex)
 
 ## Codex адаптация
-- Вместо `AskUserQuestion` используй `functions.request_user_input`.
+- Для уточнений и подтверждений используй `functions.request_user_input` (или обычный вопрос в чате, если инструмент недоступен).
 - Не используй `Task(...)`/субагентов — их алгоритмы встроены ниже (если упомянуты).
 - Команды из оригинала выполняй напрямую в этой сессии.
 
@@ -28,6 +28,11 @@ Skill для формирования сводки за неделю: задач
 source .env && curl -s "${BITRIX24_WEBHOOK_URL}method.name.json" ...
 ```
 
+Для Windows (PowerShell/CMD) не используй `source .env`. Кроссплатформенный вариант:
+```bash
+python3 .claude/scripts/bitrix_call.py method.name --params '{"KEY":"VALUE"}'
+```
+
 Если `.env` отсутствует или переменная не задана, сообщи пользователю:
 > Создайте файл `.env` в корне проекта с содержимым:
 > `export BITRIX24_WEBHOOK_URL="https://your-domain.bitrix24.ru/rest/USER_ID/WEBHOOK_CODE/"`
@@ -43,16 +48,7 @@ python3 .claude/scripts/bitrix_call.py method.name --params '{"KEY":"VALUE"}'
 - «Прошлая неделя» — понедельник–воскресенье предыдущей недели.
 - Пользователь может указать конкретные даты — адаптируй фильтры.
 
-Для вычисления границ недели используй bash:
-```bash
-# Текущая неделя (пн–сегодня)
-WEEK_START=$(date -v-Mon -v0H -v0M -v0S +%Y-%m-%d 2>/dev/null || date -d 'last monday' +%Y-%m-%d)
-WEEK_END=$(date +%Y-%m-%d)
-
-# Прошлая неделя (пн–вс)
-WEEK_START=$(date -v-Mon -v-7d +%Y-%m-%d 2>/dev/null || date -d 'last monday - 7 days' +%Y-%m-%d)
-WEEK_END=$(date -v-Mon -v-1d +%Y-%m-%d 2>/dev/null || date -d 'last sunday' +%Y-%m-%d)
-```
+Границы недели вычисляй через Python-скрипт (`--week current|last`) или явные `--from/--to` — не используй shell-команды `date`, чтобы не зависеть от платформы.
 
 ## Алгоритм сбора данных
 
@@ -84,7 +80,7 @@ python3 .claude/scripts/weekly_review/main.py --week last
 1. Получи `BITRIX24_WEBHOOK_URL` из `.env`.
 2. Получи `USER_ID` и `USER_NAME` через `profile.json`:
    ```bash
-   source .env && curl -s "${BITRIX24_WEBHOOK_URL}profile.json"
+   python3 .claude/scripts/bitrix_call.py profile
    ```
 3. Выполни алгоритм из раздела **«Агент: chat-digest»** ниже и сформируй секцию «Ключевые переписки».  
 Системные сообщения (author_id = 0, уведомления о вступлениях, авто‑сообщения) игнорируй.
@@ -351,17 +347,14 @@ If the period is ambiguous, ask the user to clarify before proceeding.
 
 Determine which directories to scan for projects. Use the **first available** source:
 
-**Source 1 (preferred):** Check if the caller passed directories in the prompt (e.g., "Папки с проектами: ~/Projects:~/work/clients"). If present — use them directly. This is the most reliable method because it avoids permission issues.
+**Source 1 (preferred):** Check if the caller passed directories in the prompt (e.g., "Папки с проектами: ~/Projects:~/work/clients" или `C:\Projects;D:\Clients`). If present — use them directly. This is the most reliable method because it avoids permission issues.
 
-**Source 2 (fallback):** Read `PROJECTS_DIRS` from `.env` in the project root:
-```bash
-source .env 2>/dev/null && echo "$PROJECTS_DIRS"
-```
+**Source 2 (fallback):** Read `PROJECTS_DIRS` directly from `.env` in the project root (without `source .env`).
 
 **Source 3 (default):** If neither source provides directories, fall back to `~/Projects`.
 
 After resolving the raw value:
-1. Split by `:` to get a list of directories
+1. Split by platform separator (`:` on Unix/macOS, `;` on Windows). Legacy `:` value on Windows тоже поддерживай, если это не drive-letter путь.
 2. Expand `~` to the user's home directory in each path
 3. For each directory, verify it exists. If a directory doesn't exist, skip it and note it
 4. If NONE of the directories exist, inform the user and stop
@@ -369,6 +362,7 @@ After resolving the raw value:
 Example values:
 - `~/Projects` → scan `~/Projects`
 - `~/Projects:~/work/clients` → scan both directories
+- `C:\Projects;D:\Clients` → scan both directories
 
 ### Step 2: Check the Cache
 

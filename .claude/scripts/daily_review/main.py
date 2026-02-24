@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -45,6 +46,35 @@ class Period:
 
 def _chunked(items: List[str], size: int) -> List[List[str]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _parse_projects_dirs(projects_dirs: str) -> List[Path]:
+    """Разобрать PROJECTS_DIRS с поддержкой Unix/Windows разделителей."""
+    raw = (projects_dirs or "").strip()
+    if not raw:
+        return []
+
+    parts: List[str]
+    if os.pathsep in raw:
+        parts = raw.split(os.pathsep)
+    elif ";" in raw:
+        parts = raw.split(";")
+    elif ":" in raw and not re.match(r"^[A-Za-z]:[\\/]", raw):
+        # Legacy-разделитель ":" для Unix-окружений.
+        parts = raw.split(":")
+    else:
+        parts = [raw]
+
+    roots: List[Path] = []
+    for part in parts:
+        item = part.strip()
+        if not item:
+            continue
+        path = Path(item).expanduser()
+        if path.exists():
+            roots.append(path)
+
+    return roots
 
 
 def _extract_task_ids(tasks: List[Dict[str, Any]]) -> List[str]:
@@ -574,9 +604,8 @@ async def collect_chat_digest(
 
 
 async def collect_git_activity(projects_dirs: str, period: Period, cache_file: Path) -> List[Dict[str, Any]]:
-    # Поддержка нескольких директорий через ':'
-    roots = [Path(p).expanduser() for p in projects_dirs.split(":" ) if p.strip()]
-    roots = [p for p in roots if p.exists()]
+    roots = _parse_projects_dirs(projects_dirs)
+    roots_key = [str(root) for root in roots]
 
     if not roots:
         return []
@@ -589,7 +618,8 @@ async def collect_git_activity(projects_dirs: str, period: Period, cache_file: P
             cached = json.loads(cache_file.read_text())
             cache_time = datetime.fromisoformat(cached.get("timestamp"))
             age = (datetime.now() - cache_time).total_seconds()
-            if age < 86400:
+            cached_roots = cached.get("roots", [])
+            if age < 86400 and cached_roots == roots_key:
                 projects_by_root = cached.get("projects_by_root", {})
                 cache_valid = True
         except Exception:
@@ -617,6 +647,7 @@ async def collect_git_activity(projects_dirs: str, period: Period, cache_file: P
             json.dumps(
                 {
                     "timestamp": datetime.now().isoformat(),
+                    "roots": roots_key,
                     "projects_by_root": projects_by_root,
                 },
                 ensure_ascii=False,

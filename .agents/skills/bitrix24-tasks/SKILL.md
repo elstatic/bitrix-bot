@@ -6,7 +6,7 @@ description: "Управление задачами Битрикс24. Актив
 # bitrix24-tasks (Codex)
 
 ## Codex адаптация
-- Вместо `AskUserQuestion` используй `functions.request_user_input`.
+- Для уточнений и подтверждений используй `functions.request_user_input` (или обычный вопрос в чате, если инструмент недоступен).
 - Не используй `Task(...)`/субагентов — их алгоритмы встроены ниже (если упомянуты).
 - Команды из оригинала выполняй напрямую в этой сессии.
 
@@ -24,6 +24,11 @@ Skill для работы с задачами Битрикс24 через REST A
 
 ```bash
 source .env && curl -s "${BITRIX24_WEBHOOK_URL}method.name.json" ...
+```
+
+Для Windows (PowerShell/CMD) не используй `source .env`. Кроссплатформенный вариант:
+```bash
+python3 .claude/scripts/bitrix_call.py method.name --params '{"KEY":"VALUE"}'
 ```
 
 Если `.env` отсутствует или переменная не задана, сообщи пользователю:
@@ -74,7 +79,7 @@ source .env && curl -s "${BITRIX24_WEBHOOK_URL}profile.json"
 
 ## Правило удаления
 
-**ОБЯЗАТЕЛЬНО**: перед вызовом `tasks.task.delete` запроси подтверждение у пользователя через `AskUserQuestion`. Все остальные операции выполняются без подтверждения.
+**ОБЯЗАТЕЛЬНО**: перед вызовом `tasks.task.delete` запроси подтверждение у пользователя через `functions.request_user_input`. Все остальные операции выполняются без подтверждения.
 
 ---
 
