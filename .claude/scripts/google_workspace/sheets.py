@@ -11,9 +11,15 @@ def _service():
     return build("sheets", "v4", credentials=get_credentials())
 
 
+def _clean_range(range_: str) -> str:
+    """Убрать экранирование ! из range (shell может добавить \\!)."""
+    return range_.replace("\\!", "!")
+
+
 def read(spreadsheet_id: str, range_: str = "") -> dict:
     """Прочитать данные из таблицы."""
     svc = _service()
+    range_ = _clean_range(range_)
     if range_:
         result = svc.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id, range=range_
@@ -35,6 +41,7 @@ def write(spreadsheet_id: str, range_: str, data_json: str) -> dict:
     """Записать данные в таблицу."""
     values = json.loads(data_json)
     svc = _service()
+    range_ = _clean_range(range_)
     body = {"values": values}
     result = svc.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
